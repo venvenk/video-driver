@@ -8,7 +8,7 @@ on:
       - meta-qcom
   pull_request:
     types: [opened, synchronize, reopened]
-    branches
+    branches:
       - meta-qcom
 
 jobs:
