@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Sync video-driver codebase
-        uses: qualcomm-linux/video-driver/.github/actions/sync@meta-qcom_full-build
+        uses: qualcomm-linux/video-driver/.github/actions/sync@meta-qcom
         with:
           event_name: ${{ github.event_name }}
           pr_ref: ${{ github.event.pull_request.head.ref || '' }}
@@ -36,13 +36,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           PARENT_DIR="$(dirname "${{ github.workspace }}")"
           META_QCOM_DIR="${PARENT_DIR}/meta-qcom"
 
           rm -rf "${META_QCOM_DIR}"
-
-          echo "Cloning meta-qcom into: ${META_QCOM_DIR}"
           git clone --depth 1 https://github.com/qualcomm-linux/meta-qcom "${META_QCOM_DIR}"
 
           echo "=== parent workspace ==="
@@ -75,7 +72,7 @@ jobs:
             "${{ github.event.pull_request.head.repo.full_name || '' }}"
 
       - name: Build ${{ matrix.build_matrix.machine }}
-        uses: qualcomm-linux/video-driver/.github/actions/build@meta-qcom_full-build
+        uses: qualcomm-linux/video-driver/.github/actions/build@meta-qcom
         with:
           docker_image: ${{ inputs.docker_image }}
           kas_file: ${{ matrix.build_matrix.kas_file }}
@@ -84,7 +81,6 @@ jobs:
           machine: ${{ matrix.build_matrix.machine }}
 
       - name: Download iris_test_app from S3
-        if: ${{ matrix.build_matrix.inject == true }}
         shell: bash
         run: |
           set -euo pipefail
@@ -97,112 +93,55 @@ jobs:
           ls -la "${{ github.workspace }}/v4l-video-test-app/build/"
 
       - name: Inject Iris test app to rootfs
-        if: ${{ matrix.build_matrix.inject == true }}
-        uses: qualcomm-linux/video-driver/.github/actions/inject@meta-qcom_full-build
+        uses: qualcomm-linux/video-driver/.github/actions/inject@meta-qcom
         with:
           docker_image: ${{ inputs.docker_image }}
           machine: ${{ matrix.build_matrix.machine }}
 
-      - name: Prepare qcomflash tarball and artifact list
+      - name: Prepare .qcomflash files for S3 upload
         shell: bash
         run: |
           set -euo pipefail
-
           workspace="${{ github.workspace }}"
           machine="${{ matrix.build_matrix.machine }}"
-          upload_location="${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.build_matrix.machine }}"
+          symlink_path="$workspace/build/tmp/deploy/images/$machine/qcom-multimedia-proprietary-image-${machine}.rootfs.qcomflash"
 
-          mkdir -p "${workspace}/artifacts"
-          : > "${workspace}/artifacts/file_list.txt"
-
-          if [ "${{ matrix.build_matrix.inject }}" = "true" ]; then
-            image_base_dir="${workspace}/build/tmp/deploy/images/${machine}"
-
-            echo "=== Inspecting image base dir ==="
-            ls -la "${image_base_dir}" || true
-
-            qcomflash_dir="$(find "${image_base_dir}" -maxdepth 1 -type d -name "*.qcomflash" | sort | head -n 1 || true)"
-
-            if [ -z "${qcomflash_dir}" ]; then
-              echo "❌ No .qcomflash directory found under ${image_base_dir}"
-              find "${image_base_dir}" -maxdepth 2 -print || true
-              exit 1
-            fi
-
-            echo "✅ Using qcomflash dir: ${qcomflash_dir}"
-            cd "${qcomflash_dir}"
-            ls -larth
-
-            if [ ! -f rootfs.img ]; then
-              echo "❌ rootfs.img not found in ${qcomflash_dir}"
-              exit 1
-            fi
-
-            tarball="${machine}_qcomflash_payload.tar.xz"
-            find "${qcomflash_dir}" -type f -exec realpath {} \; > "${workspace}/artifacts/tar_list.txt"
-
-            if [ ! -s "${workspace}/artifacts/tar_list.txt" ]; then
-              echo "⚠️ No files found to archive."
-              exit 1
-            fi
-
-            tar -cJf "${workspace}/${tarball}" -T "${workspace}/artifacts/tar_list.txt"
-            echo "${workspace}/${tarball}" >> "${workspace}/artifacts/file_list.txt"
-            echo "✅ Tarball created: ${tarball}"
-          else
-            echo "ℹ️ inject=false for ${machine}; skipping qcomflash tarball creation"
+          if [ ! -L "$symlink_path" ]; then
+            echo "❌ Symlink not found: $symlink_path"
+            exit 1
           fi
 
-          dashboard_file="${workspace}/artifacts/dashboard.html"
-          tarball_name="${machine}_qcomflash_payload.tar.xz"
-          tarball_url="https://qli-prd-video-gh-artifacts.s3.amazonaws.com/${upload_location}/${tarball_name}"
-          dashboard_url="https://qli-prd-video-gh-artifacts.s3.amazonaws.com/${upload_location}/dashboard.html"
-          job_status="${{ job.status }}"
+          resolved_dir=$(readlink -f "$symlink_path")
 
-          if [ "${{ matrix.build_matrix.inject }}" = "true" ] && [ -f "${workspace}/${tarball_name}" ]; then
-            tarball_row="<tr><td>Tarball</td><td><a href=\"${tarball_url}\">${tarball_name}</a></td></tr>"
-          else
-            tarball_row="<tr><td>Tarball</td><td>Not generated</td></tr>"
+          if [ ! -d "$resolved_dir" ]; then
+            echo "❌ Resolved .qcomflash directory not found: $resolved_dir"
+            exit 1
           fi
 
-          cat > "${dashboard_file}" <<EOF
-          <!doctype html>
-          <html>
-          <head>
-            <meta charset="utf-8">
-            <title>Build Dashboard - ${machine}</title>
-            <style>
-              body { font-family: Arial, sans-serif; margin: 20px; }
-              table { border-collapse: collapse; width: 100%; max-width: 1200px; }
-              th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-              th { background: #f2f2f2; width: 240px; }
-              .ok { color: green; font-weight: bold; }
-              .bad { color: #b00020; font-weight: bold; }
-            </style>
-          </head>
-          <body>
-            <h2>Build Dashboard - ${machine}</h2>
-            <table>
-              <tr><th>Field</th><th>Value</th></tr>
-              <tr><td>Repository</td><td>${{ github.event.repository.name }}</td></tr>
-              <tr><td>Run ID</td><td>${{ github.run_id }}-${{ github.run_attempt }}</td></tr>
-              <tr><td>Machine</td><td>${machine}</td></tr>
-              <tr><td>KAS file</td><td>${{ matrix.build_matrix.kas_file }}</td></tr>
-              <tr><td>Inject</td><td>${{ matrix.build_matrix.inject }}</td></tr>
-              <tr><td>Status</td><td class="${job_status == 'success' && 'ok' || 'bad'}">${job_status}</td></tr>
-              ${tarball_row}
-              <tr><td>Dashboard</td><td><a href="${dashboard_url}">${dashboard_url}</a></td></tr>
-            </table>
-          </body>
-          </html>
-          EOF
+          cd "$resolved_dir"
+          ls -larth
 
-          echo "${dashboard_file}" >> "${workspace}/artifacts/file_list.txt"
-          echo "✅ Dashboard created: ${dashboard_file}"
+          mkdir -p "$workspace/artifacts"
+          : > "$workspace/artifacts/file_list.txt"
+          : > "$workspace/artifacts/tar_list.txt"
+
+          find "$resolved_dir" -type f -exec realpath {} \; > "$workspace/artifacts/tar_list.txt"
+
+          if [ ! -s "$workspace/artifacts/tar_list.txt" ]; then
+            echo "⚠️ No files found to archive."
+            exit 1
+          fi
+
+          tarball="${machine}_qcomflash_payload.tar.xz"
+          tar -cJf "$tarball" -T "$workspace/artifacts/tar_list.txt"
+          mv "$tarball" "$workspace"
+          echo "$workspace/$tarball" >> "$workspace/artifacts/file_list.txt"
+
+          echo "✅ Tarball created: $tarball"
 
       - name: Upload artifacts to S3
         id: upload-artifacts
-        uses: qualcomm-linux/video-driver/.github/actions/aws_s3_helper@meta-qcom_full-build
+        uses: qualcomm-linux/video-driver/.github/actions/aws_s3_helper@meta-qcom
         with:
           s3_bucket: qli-prd-video-gh-artifacts
           local_file: ${{ github.workspace }}/artifacts/file_list.txt
@@ -222,23 +161,9 @@ jobs:
         if: success() || failure()
         shell: bash
         run: |
-          set -euo pipefail
-
-          machine="${{ matrix.build_matrix.machine }}"
-          upload_location="${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.build_matrix.machine }}"
-          dashboard_url="https://qli-prd-video-gh-artifacts.s3.amazonaws.com/${upload_location}/dashboard.html"
-
-          if [ "${{ job.status }}" = "success" ]; then
-            summary=":heavy_check_mark: Build Success for ${machine}"
+          if [ "${{ job.status }}" == "success" ]; then
+            summary=":heavy_check_mark: Build Success for ${{ matrix.build_matrix.machine }}"
           else
-            summary=":x: Build Failed for ${machine}"
+            summary=":x: Build Failed for ${{ matrix.build_matrix.machine }}"
           fi
-
-          {
-            echo "<details><summary><i>Build Summary</i></summary>"
-            echo ""
-            echo "${summary}"
-            echo ""
-            echo "Dashboard: ${dashboard_url}"
-            echo "</details>"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo -e "<details><summary><i>Build Summary</i></summary>\n${summary}\n</details>" >> "$GITHUB_STEP_SUMMARY"
