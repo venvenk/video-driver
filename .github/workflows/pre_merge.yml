@@ -5,16 +5,21 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - meta-qcom
+      - meta-qcom_full-build
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
-      - meta-qcom
+      - meta-qcom_full-build
 
 jobs:
   loading:
     uses: ./.github/workflows/loading.yml
     secrets: inherit
+    with:
+      event_name: ${{ github.event_name }}
+      pr_ref: ${{ github.event.pull_request.head.ref || '' }}
+      pr_repo: ${{ github.event.pull_request.head.repo.full_name || '' }}
+      base_ref: ${{ github.event.pull_request.base.ref || github.ref_name }}
 
   build:
     needs: loading

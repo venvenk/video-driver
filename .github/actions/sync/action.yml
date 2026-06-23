@@ -16,32 +16,25 @@ inputs:
     required: false
 
 runs:
-  using: "composite"
+  using: 'composite'
   steps:
     - name: Checkout PR code
-      if: ${{ inputs.event_name == 'pull_request_target' && inputs.pr_ref != '' && inputs.pr_repo != '' }}
+      if: ${{ (inputs.event_name == 'pull_request' || inputs.event_name == 'pull_request_target' || inputs.event_name == 'workflow_call') && inputs.pr_ref != '' && inputs.pr_repo != '' }}
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
         ref: ${{ inputs.pr_ref }}
         repository: ${{ inputs.pr_repo }}
 
-    - name: Checkout branch/ref for push/workflow_call
-      if: ${{ (inputs.event_name == 'push' || inputs.event_name == 'workflow_call') && inputs.base_ref != '' }}
+    - name: Checkout base ref
+      if: ${{ (inputs.event_name == 'push' || inputs.event_name == 'workflow_dispatch' || inputs.event_name == 'workflow_call') && inputs.base_ref != '' }}
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
         ref: ${{ inputs.base_ref }}
 
-    - name: Checkout workflow_dispatch ref
-      if: ${{ inputs.event_name == 'workflow_dispatch' && inputs.base_ref != '' }}
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        ref: ${{ inputs.base_ref }}
-
-    - name: Checkout current ref fallback
-      if: ${{ (inputs.event_name == 'push' || inputs.event_name == 'workflow_call' || inputs.event_name == 'workflow_dispatch') && inputs.base_ref == '' }}
+    - name: Checkout fallback
+      if: ${{ (inputs.event_name == 'push' || inputs.event_name == 'workflow_dispatch' || inputs.event_name == 'workflow_call') && inputs.base_ref == '' }}
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
