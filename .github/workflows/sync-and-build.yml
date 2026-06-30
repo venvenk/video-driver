@@ -104,7 +104,6 @@ jobs:
 
           SYMLINK_NAME="qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
           ln -sfn "$QCOMFLASH_DIR" "$DEPLOY_DIR/$SYMLINK_NAME"
-
           echo "✅ Symlink: $DEPLOY_DIR/$SYMLINK_NAME → $QCOMFLASH_DIR"
           ls -la "$DEPLOY_DIR/"
 
@@ -115,7 +114,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$WORKSPACE/v4l-video-test-app/build"
-          echo "Syncing files from s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/iris_test_app/"
+          echo "Syncing from s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/iris_test_app/"
           aws s3 sync \
             "s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/iris_test_app/" \
             "$WORKSPACE/v4l-video-test-app/build/"
@@ -161,9 +160,8 @@ jobs:
           fi
 
           resolved_dir=$(readlink -f "$symlink_path")
-
           if [ ! -d "$resolved_dir" ]; then
-            echo "❌ Resolved .qcomflash directory not found: $resolved_dir"
+            echo "❌ Resolved directory not found: $resolved_dir"
             exit 1
           fi
 
@@ -181,8 +179,9 @@ jobs:
           : > "$WORKSPACE/artifacts/file_list.txt"
 
           # ----------------------------------------------------------------
-          # Detect compression — S3 .tar files are sometimes gzip-compressed
-          # despite the .tar extension. tar -rf only works on plain tars.
+          # The S3 .tar files are gzip-compressed despite the .tar extension.
+          # tar -rf only works on uncompressed archives — detect and
+          # decompress first, then append the modified rootfs.img.
           # ----------------------------------------------------------------
           FILETYPE="$(file -b "$ORIGINAL_TAR")"
           echo "📋 Detected archive type: $FILETYPE"
@@ -193,7 +192,7 @@ jobs:
           elif echo "$FILETYPE" | grep -qi "bzip2"; then
             echo "🗜️  bzip2 — streaming decompress to plain tar..."
             bzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
-          elif echo "$FILETYPE" | grep -qi "\bXZ\b\|xz compressed"; then
+          elif echo "$FILETYPE" | grep -qi "XZ\|xz compressed"; then
             echo "🗜️  xz — streaming decompress to plain tar..."
             xzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "Zstandard"; then
@@ -211,7 +210,6 @@ jobs:
             -C "$resolved_dir" \
             --transform 's|^|./|' \
             rootfs.img
-
           echo "✅ rootfs.img appended"
           ls -lh "$OUTPUT_TAR"
 
@@ -227,10 +225,15 @@ jobs:
           mode: multi-upload
           upload_location: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.build_matrix.machine }}
 
+      # ----------------------------------------------------------------
+      # Upload a machine-scoped presigned URL artifact so each test
+      # matrix leg downloads only its own machine's presigned URLs.
+      # Name pattern: presigned-urls-{machine}  (hyphen separator)
+      # ----------------------------------------------------------------
       - name: Upload machine-scoped presigned URLs artifact
         uses: actions/upload-artifact@v4
         with:
-          name: presigned_urls-${{ matrix.build_matrix.machine }}
+          name: presigned-urls-${{ matrix.build_matrix.machine }}
           path: ${{ github.workspace }}/presigned_urls.json
           retention-days: 3
 
@@ -241,9 +244,9 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          rm -rf "$WORKSPACE/artifacts"  || true
-          rm -rf "$WORKSPACE/build"      || true
-          rm -rf "$WORKSPACE/downloads"  || true
+          rm -rf "$WORKSPACE/artifacts"          || true
+          rm -rf "$WORKSPACE/build"              || true
+          rm -rf "$WORKSPACE/downloads"          || true
           rm -f  "$WORKSPACE/"*_qcomflash_payload.tar || true
 
       - name: Update summary

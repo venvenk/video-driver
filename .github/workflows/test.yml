@@ -44,8 +44,8 @@ jobs:
             "artifacts.codelinaro.org/clo-420-qli-registry/${{ inputs.docker_image }}" \
             "${{ inputs.docker_image }}" || true
 
-      # Name matches exactly what sync-and-build uploads:
-      # presigned-urls-{machine}  (hyphen separator throughout)
+      # Name must exactly match the upload name in sync-and-build.yml:
+      # presigned-urls-{machine}  (hyphen separator, not underscore)
       - name: Download machine-scoped presigned URLs
         uses: actions/download-artifact@v4
         with:
@@ -59,8 +59,14 @@ jobs:
           MACHINE:   ${{ matrix.build_matrix.machine }}
         run: |
           set -euo pipefail
+          PRESIGNED="$WORKSPACE/presigned_urls.json"
+          if [ ! -f "$PRESIGNED" ]; then
+            echo "❌ presigned_urls.json not found at: $PRESIGNED"
+            ls -la "$WORKSPACE/"
+            exit 1
+          fi
           echo "=== presigned_urls.json keys ==="
-          jq -r 'keys[]' "$WORKSPACE/presigned_urls.json"
+          jq -r 'keys[]' "$PRESIGNED"
 
       - name: Clone LAVA job render scripts
         shell: bash
@@ -74,8 +80,8 @@ jobs:
         uses: qualcomm-linux/video-driver/.github/actions/lava_job_render@meta-qcom_full-build-copy
         with:
           docker_image: ${{ inputs.docker_image }}
-          machine:      ${{ matrix.build_matrix.machine }}
-          lavaname:     ${{ matrix.build_matrix.lavaname }}
+          machine: ${{ matrix.build_matrix.machine }}
+          lavaname: ${{ matrix.build_matrix.lavaname }}
           presigned_urls_file: ${{ github.workspace }}/presigned_urls.json
 
       - name: Submit LAVA job
@@ -95,6 +101,7 @@ jobs:
               -v "$(dirname "$JOB_RENDER_DIR"):$(dirname "$JOB_RENDER_DIR")" \
               "$DOCKER_IMAGE" \
               bash -c "
+                set -euo pipefail
                 lavacli identities add \
                   --token \"$LAVA_OSS_TOKEN\" \
                   --uri https://lava-oss.qualcomm.com/RPC2 \
@@ -118,7 +125,8 @@ jobs:
         run: |
           set -euo pipefail
           printf '{"id":"%s","machine":"%s"}\n' \
-            "${JOB_ID:-unknown}" "$MACHINE" > "lava-job-${MACHINE}.json"
+            "${JOB_ID:-unknown}" "$MACHINE" \
+            > "lava-job-${MACHINE}.json"
 
       - name: Upload Job ID artifact
         if: always()
@@ -160,6 +168,7 @@ jobs:
                 -v "$(dirname "$JOB_RENDER_DIR"):$(dirname "$JOB_RENDER_DIR")" \
                 "$DOCKER_IMAGE" \
                 bash -c "
+                  set -euo pipefail
                   lavacli identities add \
                     --token \"$LAVA_OSS_TOKEN\" \
                     --uri https://lava-oss.qualcomm.com/RPC2 \
@@ -196,6 +205,7 @@ jobs:
             -v "$(dirname "$JOB_RENDER_DIR"):$(dirname "$JOB_RENDER_DIR")" \
             "$DOCKER_IMAGE" \
             bash -c "
+              set -euo pipefail
               lavacli identities add \
                 --token \"$LAVA_OSS_TOKEN\" \
                 --uri https://lava-oss.qualcomm.com/RPC2 \
