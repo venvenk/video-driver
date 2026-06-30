@@ -44,11 +44,25 @@ jobs:
             "artifacts.codelinaro.org/clo-420-qli-registry/${{ inputs.docker_image }}" \
             "${{ inputs.docker_image }}" || true
 
-      - name: Download presigned_urls.json from build job
+      # Download ONLY this machine's presigned URLs — avoids cross-machine
+      # overwrite that caused the "key not found" error
+      - name: Download machine-specific presigned_urls.json
         uses: actions/download-artifact@v4
         with:
-          name: presigned_urls.json
+          name: presigned_urls_${{ matrix.build_matrix.machine }}
           path: ${{ github.workspace }}
+
+      - name: Rename to presigned_urls.json
+        shell: bash
+        env:
+          WORKSPACE: ${{ github.workspace }}
+          MACHINE:   ${{ matrix.build_matrix.machine }}
+        run: |
+          set -euo pipefail
+          mv "$WORKSPACE/presigned_urls_${MACHINE}.json" \
+             "$WORKSPACE/presigned_urls.json"
+          echo "=== presigned_urls.json keys ==="
+          jq -r 'keys[]' "$WORKSPACE/presigned_urls.json"
 
       - name: Clone LAVA job render scripts
         shell: bash
@@ -87,14 +101,15 @@ jobs:
                   --token \"$LAVA_OSS_TOKEN\" \
                   --uri https://lava-oss.qualcomm.com/RPC2 \
                   --username \"$LAVA_OSS_USER\" production \
-                && lavacli -i production jobs submit ./renders/lava_job_definition.yaml
+                && lavacli -i production jobs submit \
+                     ./renders/lava_job_definition.yaml
               "
           )"
 
           job_url="https://lava-oss.qualcomm.com/scheduler/job/${job_id}"
-          echo "job_id=$job_id"     >> "$GITHUB_OUTPUT"
-          echo "job_url=$job_url"   >> "$GITHUB_OUTPUT"
-          echo "JOB_ID=$job_id"     >> "$GITHUB_ENV"
+          echo "job_id=$job_id"   >> "$GITHUB_OUTPUT"
+          echo "job_url=$job_url" >> "$GITHUB_OUTPUT"
+          echo "JOB_ID=$job_id"   >> "$GITHUB_ENV"
           echo "🚀 LAVA Job submitted: $job_url"
 
       - name: Save Job ID for reporting
@@ -128,13 +143,13 @@ jobs:
           STATE=""
           HEALTH=""
           START_TIME=$(date +%s)
-          TIMEOUT_SECONDS=$((2 * 60 * 60))   # 2 hours
+          TIMEOUT_SECONDS=$((2 * 60 * 60))
 
           get_lava_field() {
             local content="$1" field="$2"
             printf '%s\n' "$content" \
               | sed -nE \
-                  "s/^[[:space:]]*-?[[:space:]]*${field}[[:space:]]*:[[:space:]]*(.*)[[:space:]]*$/\1/pI" \
+                "s/^[[:space:]]*-?[[:space:]]*${field}[[:space:]]*:[[:space:]]*(.*)[[:space:]]*$/\1/pI" \
               | head -n 1 | xargs
           }
 
@@ -171,14 +186,12 @@ jobs:
             sleep 30
           done
 
-          # ---- Health check ------------------------------------------------
           if [ "${HEALTH:-}" != "Complete" ]; then
             echo "::error::Job $JOB_ID health=$HEALTH (expected Complete)"
             echo "summary=:warning: LAVA Job $HEALTH" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          # ---- Fetch results -----------------------------------------------
           echo "📋 Fetching results for job $JOB_ID..."
           docker run -i --rm \
             --workdir="$JOB_RENDER_DIR" \
@@ -196,7 +209,6 @@ jobs:
           echo "=== Raw LAVA results ==="
           cat lava_results.txt
 
-          # ---- Evaluate video pre-merge test result ------------------------
           RESULTS="$(
             grep -E \
               '^\* 0_video_pre-merge-tests\.Video_V4L2_Runner \[(pass|fail)\]' \
@@ -220,9 +232,6 @@ jobs:
           echo "✅ Video_V4L2_Runner PASSED"
           echo "summary=:heavy_check_mark: Video_V4L2_Runner Passed" >> "$GITHUB_OUTPUT"
 
-  # ------------------------------------------------------------------ #
-  # Summary job — runs even if individual test matrix legs fail         #
-  # ------------------------------------------------------------------ #
   generate-summary:
     needs: test
     if: always()
@@ -259,7 +268,8 @@ jobs:
                 DETAILS=$(curl -sf -H "$AUTH" \
                   "$LAVA_URL/api/v0.2/jobs/$JOB_ID/")
                 STATE=$(echo       "$DETAILS" | jq -r '.state // empty')
-                DEVICE_TYPE=$(echo "$DETAILS" | jq -r '.requested_device_type // empty')
+                DEVICE_TYPE=$(echo "$DETAILS" | \
+                  jq -r '.requested_device_type // empty')
                 [ -n "$DEVICE_TYPE" ] && [ "$DEVICE_TYPE" != "null" ] \
                   || DEVICE_TYPE="unknown-$JOB_ID"
 
@@ -274,7 +284,6 @@ jobs:
                     | while IFS= read -r SUITE; do
                         SNAME=$(echo "$SUITE" | jq -r '.name')
                         SID=$(echo   "$SUITE" | jq -r '.id')
-
                         if [ "$SNAME" != "lava" ]; then
                           TESTS=$(curl -sf -H "$AUTH" \
                             "$LAVA_URL/api/v0.2/jobs/$JOB_ID/suites/$SID/tests/")
@@ -283,7 +292,8 @@ jobs:
                               TNAME=$(echo   "$T" | jq -r '.name')
                               TRESULT=$(echo "$T" | jq -r '.result')
                               TURL="$LAVA_URL/results/$JOB_ID/$SID"
-                              [ -n "$TNAME" ] && [ "$TNAME" != "null" ] || continue
+                              [ -n "$TNAME" ] && [ "$TNAME" != "null" ] \
+                                || continue
                               jq -nc \
                                 --arg k "$TNAME" \
                                 --arg u "$TURL" \
@@ -307,20 +317,19 @@ jobs:
                   '{key:$k, value:$v}'
               done \
             | jq -s -c \
-                'reduce .[] as $i ({}; .[$i.key] = ((.[$i.key] // {}) + $i.value))'
+                'reduce .[] as $i
+                  ({}; .[$i.key] = ((.[$i.key] // {}) + $i.value))'
           )"
 
-          DEVICES=$(echo "$INPUT" | jq -r 'keys[]'   | sort)
+          DEVICES=$(echo "$INPUT" | jq -r 'keys[]'      | sort)
           RESULTS=$(echo "$INPUT" | jq -r '.[]|keys[]?' | sort -u)
 
           {
             echo "### LAVA Test Summary"
             echo ""
-
             printf "| Test Case |"
             for D in $DEVICES; do printf " %s |" "$D"; done
             echo ""
-
             printf "| :--- |"
             for _ in $DEVICES; do printf " :---: |"; done
             echo ""
@@ -328,10 +337,10 @@ jobs:
             for R in $RESULTS; do
               printf "| **%s** |" "$R"
               for D in $DEVICES; do
-                VAL=$(echo "$INPUT" | jq -r --arg d "$D" --arg r "$R" \
-                        '.[$d][$r].result // ""')
-                URL=$(echo "$INPUT" | jq -r --arg d "$D" --arg r "$R" \
-                        '.[$d][$r].url // ""')
+                VAL=$(echo "$INPUT" | jq -r \
+                  --arg d "$D" --arg r "$R" '.[$d][$r].result // ""')
+                URL=$(echo "$INPUT" | jq -r \
+                  --arg d "$D" --arg r "$R" '.[$d][$r].url // ""')
                 ICON=":no_entry_sign:"
                 [ "$VAL" = "pass" ] && ICON=":white_check_mark:"
                 [ "$VAL" = "fail" ] && ICON=":x:"
@@ -354,17 +363,11 @@ jobs:
             | while IFS= read -r -d '' TESTJOB; do
                 JOB_ID=$(jq -r '.id' "$TESTJOB")
                 AUTH="Authorization: Token $LAVA_TOKEN"
-                D=$(curl -sf -H "$AUTH" "$LAVA_URL/api/v0.2/jobs/$JOB_ID/")
-                echo "| $JOB_ID \
-                | $(echo "$D"|jq -r '.requested_device_type') \
-                | $(echo "$D"|jq -r '.state') \
-                | $(echo "$D"|jq -r '.health') \
-                | [View]($LAVA_URL/results/$JOB_ID) |"
-              done
-          } | tee "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload summary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lava-summary-report
-          path: step-summary.md
+                D=$(curl -sf -H "$AUTH" \
+                  "$LAVA_URL/api/v0.2/jobs/$JOB_ID/")
+                printf "| %s | %s | %s | %s | [View](%s) |\n" \
+                  "$JOB_ID" \
+                  "$(echo "$D" | jq -r '.requested_device_type')" \
+                  "$(echo "$D" | jq -r '.state')" \
+                  "$(echo "$D" | jq -r '.health')" \
+                  "$LAVA_URL/results

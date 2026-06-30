@@ -50,8 +50,8 @@ jobs:
       - name: Download meta artifact from S3
         shell: bash
         env:
-          WORKSPACE: ${{ github.workspace }}
-          MACHINE: ${{ matrix.build_matrix.machine }}
+          WORKSPACE:   ${{ github.workspace }}
+          MACHINE:     ${{ matrix.build_matrix.machine }}
           META_S3_KEY: ${{ matrix.build_matrix.meta_s3_key }}
         run: |
           set -euo pipefail
@@ -66,8 +66,8 @@ jobs:
       - name: Extract meta artifact and create qcomflash symlink
         shell: bash
         env:
-          WORKSPACE: ${{ github.workspace }}
-          MACHINE: ${{ matrix.build_matrix.machine }}
+          WORKSPACE:   ${{ github.workspace }}
+          MACHINE:     ${{ matrix.build_matrix.machine }}
           META_S3_KEY: ${{ matrix.build_matrix.meta_s3_key }}
         run: |
           set -euo pipefail
@@ -106,7 +106,6 @@ jobs:
 
           SYMLINK_NAME="qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
           ln -sfn "$QCOMFLASH_DIR" "$DEPLOY_DIR/$SYMLINK_NAME"
-
           echo "✅ Symlink: $DEPLOY_DIR/$SYMLINK_NAME → $QCOMFLASH_DIR"
           ls -la "$DEPLOY_DIR/"
 
@@ -150,8 +149,9 @@ jobs:
       - name: Prepare .qcomflash files for S3 upload
         shell: bash
         env:
-          WORKSPACE: ${{ github.workspace }}
-          MACHINE: ${{ matrix.build_matrix.machine }}
+          WORKSPACE:   ${{ github.workspace }}
+          MACHINE:     ${{ matrix.build_matrix.machine }}
+          META_S3_KEY: ${{ matrix.build_matrix.meta_s3_key }}
         run: |
           set -euo pipefail
 
@@ -175,15 +175,33 @@ jobs:
           mkdir -p "$WORKSPACE/artifacts"
           : > "$WORKSPACE/artifacts/file_list.txt"
 
-          # Plain uncompressed tar — avoids multi-minute xz compression of 6.4 GB rootfs
+          # ---------------------------------------------------------------
+          # FAST APPROACH: reuse the original downloaded tar as the base.
+          # Only rootfs.img was modified by the inject step — append it to
+          # the end of the existing tar (tar extraction always uses the last
+          # entry, so the updated rootfs.img wins at flash time).
+          # This avoids re-reading the entire ~11 GB directory from scratch.
+          # ---------------------------------------------------------------
+
+          ORIGINAL_TAR="$WORKSPACE/downloads/meta/${META_S3_KEY}"
           tarball="${MACHINE}_qcomflash_payload.tar"
-          echo "📦 Creating uncompressed tarball: $tarball"
+          OUTPUT_TAR="$WORKSPACE/$tarball"
 
-          tar -cf "$WORKSPACE/$tarball" -C "$resolved_dir" .
+          echo "📋 Copying original tar as base (fast filesystem copy)..."
+          cp "$ORIGINAL_TAR" "$OUTPUT_TAR"
+          echo "✅ Base tar copied: $(ls -lh "$OUTPUT_TAR" | awk '{print $5}')"
 
-          echo "$WORKSPACE/$tarball" >> "$WORKSPACE/artifacts/file_list.txt"
-          echo "✅ Tarball created: $WORKSPACE/$tarball"
-          ls -lh "$WORKSPACE/$tarball"
+          echo "📦 Appending updated rootfs.img to tar..."
+          # Append only the modified rootfs.img — fast, just writes to EOF
+          tar -rf "$OUTPUT_TAR" \
+            -C "$resolved_dir" \
+            --transform 's|^|./|' \
+            rootfs.img
+          echo "✅ rootfs.img appended"
+          ls -lh "$OUTPUT_TAR"
+
+          echo "$OUTPUT_TAR" >> "$WORKSPACE/artifacts/file_list.txt"
+          echo "✅ Queued for upload: $OUTPUT_TAR"
 
       - name: Upload artifacts to S3
         id: upload-artifacts
@@ -194,6 +212,32 @@ jobs:
           mode: multi-upload
           upload_location: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.build_matrix.machine }}
 
+      - name: Upload machine-specific presigned URLs artifact
+        shell: bash
+        env:
+          WORKSPACE: ${{ github.workspace }}
+          MACHINE:   ${{ matrix.build_matrix.machine }}
+        run: |
+          set -euo pipefail
+          # Rename the shared presigned_urls.json to a machine-specific name
+          # so parallel matrix legs do not overwrite each other's artifact
+          if [ -f "$WORKSPACE/presigned_urls.json" ]; then
+            cp "$WORKSPACE/presigned_urls.json" \
+               "$WORKSPACE/presigned_urls_${MACHINE}.json"
+            echo "✅ Machine-specific presigned URLs: presigned_urls_${MACHINE}.json"
+            cat "$WORKSPACE/presigned_urls_${MACHINE}.json"
+          else
+            echo "❌ presigned_urls.json not found"
+            exit 1
+          fi
+
+      - name: Upload presigned URLs as machine-scoped artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: presigned_urls_${{ matrix.build_matrix.machine }}
+          path: ${{ github.workspace }}/presigned_urls_${{ matrix.build_matrix.machine }}.json
+          retention-days: 3
+
       - name: Clean up
         if: always()
         shell: bash
@@ -201,10 +245,12 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          rm -rf "$WORKSPACE/artifacts"   || true
-          rm -rf "$WORKSPACE/build"       || true
-          rm -rf "$WORKSPACE/downloads"   || true
-          rm -f  "$WORKSPACE/"*_qcomflash_payload.tar || true
+          rm -rf "$WORKSPACE/artifacts"                       || true
+          rm -rf "$WORKSPACE/build"                           || true
+          rm -rf "$WORKSPACE/downloads"                       || true
+          rm -f  "$WORKSPACE/"*_qcomflash_payload.tar         || true
+          rm -f  "$WORKSPACE/presigned_urls.json"             || true
+          rm -f  "$WORKSPACE/presigned_urls_"*.json           || true
 
       - name: Update summary
         if: success() || failure()
