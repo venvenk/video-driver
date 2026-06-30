@@ -106,6 +106,7 @@ jobs:
 
           SYMLINK_NAME="qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
           ln -sfn "$QCOMFLASH_DIR" "$DEPLOY_DIR/$SYMLINK_NAME"
+
           echo "✅ Symlink: $DEPLOY_DIR/$SYMLINK_NAME → $QCOMFLASH_DIR"
           ls -la "$DEPLOY_DIR/"
 
@@ -169,34 +170,57 @@ jobs:
             exit 1
           fi
 
-          echo "=== qcomflash contents ==="
-          ls -larth "$resolved_dir"
-
-          mkdir -p "$WORKSPACE/artifacts"
-          : > "$WORKSPACE/artifacts/file_list.txt"
-
-          # ---------------------------------------------------------------
-          # FAST APPROACH: reuse the original downloaded tar as the base.
-          # Only rootfs.img was modified by the inject step — append it to
-          # the end of the existing tar (tar extraction always uses the last
-          # entry, so the updated rootfs.img wins at flash time).
-          # This avoids re-reading the entire ~11 GB directory from scratch.
-          # ---------------------------------------------------------------
+          ROOTFS_IMG="$resolved_dir/rootfs.img"
+          if [ ! -f "$ROOTFS_IMG" ]; then
+            echo "❌ rootfs.img not found at: $ROOTFS_IMG"
+            exit 1
+          fi
 
           ORIGINAL_TAR="$WORKSPACE/downloads/meta/${META_S3_KEY}"
           tarball="${MACHINE}_qcomflash_payload.tar"
           OUTPUT_TAR="$WORKSPACE/$tarball"
 
-          echo "📋 Copying original tar as base (fast filesystem copy)..."
-          cp "$ORIGINAL_TAR" "$OUTPUT_TAR"
-          echo "✅ Base tar copied: $(ls -lh "$OUTPUT_TAR" | awk '{print $5}')"
+          mkdir -p "$WORKSPACE/artifacts"
+          : > "$WORKSPACE/artifacts/file_list.txt"
 
-          echo "📦 Appending updated rootfs.img to tar..."
-          # Append only the modified rootfs.img — fast, just writes to EOF
+          # ----------------------------------------------------------------
+          # Detect compression — S3 meta tars use .tar extension but are
+          # actually gzip compressed. tar -rf only works on plain tars so
+          # we must decompress first before appending rootfs.img
+          # ----------------------------------------------------------------
+          FILETYPE="$(file -b "$ORIGINAL_TAR")"
+          echo "📋 Detected archive type: $FILETYPE"
+
+          if echo "$FILETYPE" | grep -qi "gzip"; then
+            echo "🗜️  gzip — streaming decompress to plain tar..."
+            zcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
+          elif echo "$FILETYPE" | grep -qi "bzip2"; then
+            echo "🗜️  bzip2 — streaming decompress to plain tar..."
+            bzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
+          elif echo "$FILETYPE" | grep -qi "\bXZ\b\|xz compressed"; then
+            echo "🗜️  xz — streaming decompress to plain tar..."
+            xzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
+          elif echo "$FILETYPE" | grep -qi "Zstandard"; then
+            echo "🗜️  zstd — streaming decompress to plain tar..."
+            zstdcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
+          else
+            echo "📋 Plain tar (uncompressed) — copying directly..."
+            cp "$ORIGINAL_TAR" "$OUTPUT_TAR"
+          fi
+
+          echo "✅ Base tar ready: $(ls -lh "$OUTPUT_TAR" | awk '{print $5}')"
+
+          # ----------------------------------------------------------------
+          # Append only the modified rootfs.img — fast, just writes to EOF.
+          # tar extraction always uses the last matching entry so the
+          # updated rootfs.img will win at flash time.
+          # ----------------------------------------------------------------
+          echo "📦 Appending updated rootfs.img to plain tar..."
           tar -rf "$OUTPUT_TAR" \
             -C "$resolved_dir" \
             --transform 's|^|./|' \
             rootfs.img
+
           echo "✅ rootfs.img appended"
           ls -lh "$OUTPUT_TAR"
 
@@ -213,29 +237,10 @@ jobs:
           upload_location: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.build_matrix.machine }}
 
       - name: Upload machine-specific presigned URLs artifact
-        shell: bash
-        env:
-          WORKSPACE: ${{ github.workspace }}
-          MACHINE:   ${{ matrix.build_matrix.machine }}
-        run: |
-          set -euo pipefail
-          # Rename the shared presigned_urls.json to a machine-specific name
-          # so parallel matrix legs do not overwrite each other's artifact
-          if [ -f "$WORKSPACE/presigned_urls.json" ]; then
-            cp "$WORKSPACE/presigned_urls.json" \
-               "$WORKSPACE/presigned_urls_${MACHINE}.json"
-            echo "✅ Machine-specific presigned URLs: presigned_urls_${MACHINE}.json"
-            cat "$WORKSPACE/presigned_urls_${MACHINE}.json"
-          else
-            echo "❌ presigned_urls.json not found"
-            exit 1
-          fi
-
-      - name: Upload presigned URLs as machine-scoped artifact
         uses: actions/upload-artifact@v4
         with:
-          name: presigned_urls_${{ matrix.build_matrix.machine }}
-          path: ${{ github.workspace }}/presigned_urls_${{ matrix.build_matrix.machine }}.json
+          name: presigned_urls-${{ matrix.build_matrix.machine }}
+          path: ${{ github.workspace }}/presigned_urls.json
           retention-days: 3
 
       - name: Clean up
@@ -245,12 +250,10 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          rm -rf "$WORKSPACE/artifacts"                       || true
-          rm -rf "$WORKSPACE/build"                           || true
-          rm -rf "$WORKSPACE/downloads"                       || true
-          rm -f  "$WORKSPACE/"*_qcomflash_payload.tar         || true
-          rm -f  "$WORKSPACE/presigned_urls.json"             || true
-          rm -f  "$WORKSPACE/presigned_urls_"*.json           || true
+          rm -rf "$WORKSPACE/artifacts"  || true
+          rm -rf "$WORKSPACE/build"      || true
+          rm -rf "$WORKSPACE/downloads"  || true
+          rm -f  "$WORKSPACE/"*_qcomflash_payload.tar || true
 
       - name: Update summary
         if: success() || failure()
