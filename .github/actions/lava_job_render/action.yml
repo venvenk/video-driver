@@ -31,7 +31,8 @@ runs:
       run: |
         set -euo pipefail
 
-        tarball_key="${MACHINE}_qcomflash_payload.tar.xz"
+        # Must match the uncompressed tarball produced by sync-and-build.yml
+        tarball_key="${MACHINE}_qcomflash_payload.tar"
 
         if [ ! -f "$PRESIGNED_FILE" ]; then
           echo "❌ presigned_urls.json not found at: $PRESIGNED_FILE"
@@ -73,9 +74,6 @@ runs:
         DATA_DIR="$JOB_RENDER_DIR/data"
         mkdir -p "$DATA_DIR"
 
-        # flasher.jinja2 reads node.artifacts.flash_image
-        # platform_config.name is populated from the --meta-qcom / platform
-        # field and drives the board prompts in the template
         cat > "$DATA_DIR/cloudData.json" << EOF
         {
           "id": "ci-${MACHINE}",
@@ -87,12 +85,12 @@ runs:
           "state": "done",
           "result": "pass",
           "artifacts": {
-            "metadata": "",
-            "kernel":     "",
-            "vmlinux":    "",
-            "modules":    "",
-            "ramdisk":    "",
-            "firmware":   "",
+            "metadata":    "",
+            "kernel":      "",
+            "vmlinux":     "",
+            "modules":     "",
+            "ramdisk":     "",
+            "firmware":    "",
             "flash_image": "${ARTIFACT_URL}"
           },
           "data": {
