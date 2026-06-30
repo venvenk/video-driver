@@ -174,7 +174,7 @@ jobs:
           fi
 
           echo "=== qcomflash contents ==="
-          ls -larth "$resolved_dir"
+          ls -lh "$resolved_dir"
 
           ORIGINAL_TAR="$WORKSPACE/downloads/meta/${META_S3_KEY}"
           tarball="${MACHINE}_qcomflash_payload.tar"
@@ -183,25 +183,26 @@ jobs:
           mkdir -p "$WORKSPACE/artifacts"
           : > "$WORKSPACE/artifacts/file_list.txt"
 
-          # ------------------------------------------------------------------
-          # The S3 .tar files are gzip-compressed despite the .tar extension.
-          # tar -rf only works on plain uncompressed archives so we must
-          # decompress first, then append the modified rootfs.img.
-          # ------------------------------------------------------------------
+          # ---------------------------------------------------------------
+          # The S3 .tar files are gzip-compressed despite the .tar extension
+          # tar -rf ONLY works on plain uncompressed tars — detect and
+          # decompress first, then append only the modified rootfs.img.
+          # This avoids re-reading the full ~11 GB directory from scratch.
+          # ---------------------------------------------------------------
           FILETYPE="$(file -b "$ORIGINAL_TAR")"
-          echo "📋 Detected archive type: $FILETYPE"
+          echo "📋 Archive type: $FILETYPE"
 
           if echo "$FILETYPE" | grep -qi "gzip"; then
-            echo "🗜️  gzip — streaming decompress to plain tar..."
+            echo "🗜️  gzip detected — streaming decompress to plain tar..."
             zcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "bzip2"; then
-            echo "🗜️  bzip2 — streaming decompress to plain tar..."
+            echo "🗜️  bzip2 detected — streaming decompress to plain tar..."
             bzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "\bXZ\b\|xz compressed"; then
-            echo "🗜️  xz — streaming decompress to plain tar..."
+            echo "🗜️  xz detected — streaming decompress to plain tar..."
             xzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "Zstandard"; then
-            echo "🗜️  zstd — streaming decompress to plain tar..."
+            echo "🗜️  zstd detected — streaming decompress to plain tar..."
             zstdcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           else
             echo "📋 Plain tar (uncompressed) — copying directly..."
@@ -210,7 +211,7 @@ jobs:
 
           echo "✅ Base tar ready: $(ls -lh "$OUTPUT_TAR" | awk '{print $5}')"
 
-          echo "📦 Appending updated rootfs.img into plain tar..."
+          echo "📦 Appending updated rootfs.img (tar -rf)..."
           tar -rf "$OUTPUT_TAR" \
             -C "$resolved_dir" \
             --transform 's|^|./|' \
@@ -245,10 +246,12 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          rm -rf "$WORKSPACE/artifacts"        || true
-          rm -rf "$WORKSPACE/build"            || true
-          rm -rf "$WORKSPACE/downloads"        || true
+          rm -rf "$WORKSPACE/artifacts"            || true
+          rm -rf "$WORKSPACE/build"                || true
+          rm -rf "$WORKSPACE/downloads"            || true
+          rm -rf "$WORKSPACE/v4l-video-test-app"   || true
           rm -f  "$WORKSPACE/"*_qcomflash_payload.tar || true
+          rm -f  "$WORKSPACE/presigned_urls.json"  || true
 
       - name: Update summary
         if: success() || failure()
