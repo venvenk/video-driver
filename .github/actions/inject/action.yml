@@ -12,12 +12,6 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Create top-level images directory
-      shell: bash
-      run: |
-        set -euo pipefail
-        mkdir -p "${{ github.workspace }}/images"
-
     - name: Run IRIS injection in Docker
       shell: bash
       run: |
@@ -47,7 +41,6 @@ runs:
             echo "=== Looking for build output under: ${IMAGE_BASE_DIR} ==="
             if [ ! -d "${IMAGE_BASE_DIR}" ]; then
               echo "❌ Machine output directory not found: ${IMAGE_BASE_DIR}"
-              echo "=== build/tmp/deploy/images tree ==="
               find build/tmp/deploy/images -maxdepth 3 -mindepth 1 -print | sort || true
               exit 1
             fi
@@ -55,16 +48,27 @@ runs:
             echo "=== Contents of machine directory ==="
             ls -la "${IMAGE_BASE_DIR}" || true
 
-            IMAGE_DIR="$(find "${IMAGE_BASE_DIR}" -maxdepth 1 -type d -name "*.qcomflash" | sort | head -n 1 || true)"
+            # Match both real directories AND symlinks named *.qcomflash
+            IMAGE_DIR="$(
+              find "${IMAGE_BASE_DIR}" -maxdepth 1 \
+                \( -type d -o -type l \) \
+                -name "*.qcomflash" \
+              | sort | head -n 1 || true
+            )"
 
             if [ -z "${IMAGE_DIR}" ]; then
-              echo "❌ No .qcomflash directory found under ${IMAGE_BASE_DIR}"
+              echo "❌ No .qcomflash directory or symlink found under ${IMAGE_BASE_DIR}"
               echo "=== Full contents under machine directory ==="
               find "${IMAGE_BASE_DIR}" -maxdepth 2 -print | sort || true
               exit 1
             fi
 
             echo "✅ Using image directory: ${IMAGE_DIR}"
+
+            # Resolve symlink so subsequent paths are absolute real paths
+            IMAGE_DIR="$(realpath "${IMAGE_DIR}")"
+            echo "✅ Resolved to: ${IMAGE_DIR}"
+
             cd "${IMAGE_DIR}"
             ls -larth
 
