@@ -44,24 +44,21 @@ jobs:
             "artifacts.codelinaro.org/clo-420-qli-registry/${{ inputs.docker_image }}" \
             "${{ inputs.docker_image }}" || true
 
-      # Download ONLY this machine's presigned URLs — avoids cross-machine
-      # overwrite that caused the "key not found" error
-      - name: Download machine-specific presigned_urls.json
+      - name: Download machine-specific presigned URLs
         uses: actions/download-artifact@v4
         with:
-          name: presigned_urls_${{ matrix.build_matrix.machine }}
+          # Must match the upload name in sync-and-build.yml
+          name: presigned_urls-${{ matrix.build_matrix.machine }}
           path: ${{ github.workspace }}
 
-      - name: Rename to presigned_urls.json
+      - name: Verify presigned_urls.json
         shell: bash
         env:
           WORKSPACE: ${{ github.workspace }}
           MACHINE:   ${{ matrix.build_matrix.machine }}
         run: |
           set -euo pipefail
-          mv "$WORKSPACE/presigned_urls_${MACHINE}.json" \
-             "$WORKSPACE/presigned_urls.json"
-          echo "=== presigned_urls.json keys ==="
+          echo "=== presigned_urls.json keys for $MACHINE ==="
           jq -r 'keys[]' "$WORKSPACE/presigned_urls.json"
 
       - name: Clone LAVA job render scripts
@@ -76,8 +73,8 @@ jobs:
         uses: qualcomm-linux/video-driver/.github/actions/lava_job_render@meta-qcom_full-build-copy
         with:
           docker_image: ${{ inputs.docker_image }}
-          machine: ${{ matrix.build_matrix.machine }}
-          lavaname: ${{ matrix.build_matrix.lavaname }}
+          machine:      ${{ matrix.build_matrix.machine }}
+          lavaname:     ${{ matrix.build_matrix.lavaname }}
           presigned_urls_file: ${{ github.workspace }}/presigned_urls.json
 
       - name: Submit LAVA job
@@ -370,4 +367,12 @@ jobs:
                   "$(echo "$D" | jq -r '.requested_device_type')" \
                   "$(echo "$D" | jq -r '.state')" \
                   "$(echo "$D" | jq -r '.health')" \
-                  "$LAVA_URL/results
+                  "$LAVA_URL/results/$JOB_ID"
+              done
+          } | tee "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lava-summary-report
+          path: step-summary.md

@@ -82,13 +82,11 @@ jobs:
           echo "=== Extracted contents (depth 3) ==="
           find "$DEPLOY_DIR" -maxdepth 3 -print | sort
 
-          # Search up to depth 2 for a *.qcomflash directory
           QCOMFLASH_DIR="$(
             find "$DEPLOY_DIR" -maxdepth 2 -type d -name "*.qcomflash" \
               | head -n 1 || true
           )"
 
-          # Fallback: use the top-level extracted subdirectory
           if [ -z "$QCOMFLASH_DIR" ]; then
             echo "⚠️  No *.qcomflash dir found, using top-level extracted subdir"
             QCOMFLASH_DIR="$(
@@ -106,7 +104,6 @@ jobs:
 
           SYMLINK_NAME="qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
           ln -sfn "$QCOMFLASH_DIR" "$DEPLOY_DIR/$SYMLINK_NAME"
-
           echo "✅ Symlink: $DEPLOY_DIR/$SYMLINK_NAME → $QCOMFLASH_DIR"
           ls -la "$DEPLOY_DIR/"
 
@@ -183,39 +180,30 @@ jobs:
           mkdir -p "$WORKSPACE/artifacts"
           : > "$WORKSPACE/artifacts/file_list.txt"
 
-          # ----------------------------------------------------------------
-          # Detect compression — S3 meta tars use .tar extension but are
-          # actually gzip compressed. tar -rf only works on plain tars so
-          # we must decompress first before appending rootfs.img
-          # ----------------------------------------------------------------
+          # Detect compression — S3 meta .tar files may be gzip despite .tar extension
           FILETYPE="$(file -b "$ORIGINAL_TAR")"
-          echo "📋 Detected archive type: $FILETYPE"
+          echo "📋 Archive type: $FILETYPE"
 
           if echo "$FILETYPE" | grep -qi "gzip"; then
-            echo "🗜️  gzip — streaming decompress to plain tar..."
+            echo "🗜️  gzip detected — streaming decompress to plain tar..."
             zcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "bzip2"; then
-            echo "🗜️  bzip2 — streaming decompress to plain tar..."
+            echo "🗜️  bzip2 detected — streaming decompress to plain tar..."
             bzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "\bXZ\b\|xz compressed"; then
-            echo "🗜️  xz — streaming decompress to plain tar..."
+            echo "🗜️  xz detected — streaming decompress to plain tar..."
             xzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "Zstandard"; then
-            echo "🗜️  zstd — streaming decompress to plain tar..."
+            echo "🗜️  zstd detected — streaming decompress to plain tar..."
             zstdcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           else
-            echo "📋 Plain tar (uncompressed) — copying directly..."
+            echo "📋 Plain tar — copying directly..."
             cp "$ORIGINAL_TAR" "$OUTPUT_TAR"
           fi
 
           echo "✅ Base tar ready: $(ls -lh "$OUTPUT_TAR" | awk '{print $5}')"
 
-          # ----------------------------------------------------------------
-          # Append only the modified rootfs.img — fast, just writes to EOF.
-          # tar extraction always uses the last matching entry so the
-          # updated rootfs.img will win at flash time.
-          # ----------------------------------------------------------------
-          echo "📦 Appending updated rootfs.img to plain tar..."
+          echo "📦 Appending updated rootfs.img..."
           tar -rf "$OUTPUT_TAR" \
             -C "$resolved_dir" \
             --transform 's|^|./|' \
@@ -239,6 +227,7 @@ jobs:
       - name: Upload machine-specific presigned URLs artifact
         uses: actions/upload-artifact@v4
         with:
+          # Per-machine name prevents matrix legs from overwriting each other
           name: presigned_urls-${{ matrix.build_matrix.machine }}
           path: ${{ github.workspace }}/presigned_urls.json
           retention-days: 3
