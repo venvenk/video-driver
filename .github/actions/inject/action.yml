@@ -50,26 +50,23 @@ runs:
 
             # -----------------------------------------------------------
             # Resolve IMAGE_DIR safely inside the container.
-            #
-            # The symlink was created on the host with an absolute host
-            # path as its target — that path does not exist inside the
-            # container.  So we NEVER call realpath/readlink -f on it.
-            # Instead:
+            # The symlink target is an absolute host path that does not
+            # exist inside Docker — never call realpath/readlink -f on it.
             #   1. Prefer a real *.qcomflash directory (type d).
-            #   2. If only a symlink exists, extract the target *basename*
-            #      and rebuild the path relative to IMAGE_BASE_DIR.
-            #   3. Final fallback: first real subdirectory in IMAGE_BASE_DIR.
+            #   2. Symlink named *.qcomflash → use basename of target,
+            #      rebuild relative to IMAGE_BASE_DIR.
+            #   3. Fallback: first real subdirectory.
             # -----------------------------------------------------------
 
             IMAGE_DIR=""
 
-            # 1. Real *.qcomflash directory?
+            # 1. Real *.qcomflash directory
             IMAGE_DIR="$(
               find "${IMAGE_BASE_DIR}" -maxdepth 1 -type d \
                 -name "*.qcomflash" | sort | head -n 1 || true
             )"
 
-            # 2. Symlink named *.qcomflash — use basename of its target
+            # 2. Symlink named *.qcomflash
             if [ -z "${IMAGE_DIR}" ]; then
               SYMLINK="$(
                 find "${IMAGE_BASE_DIR}" -maxdepth 1 -type l \
@@ -93,7 +90,8 @@ runs:
                 find "${IMAGE_BASE_DIR}" -maxdepth 1 -mindepth 1 \
                   -type d | sort | head -n 1 || true
               )"
-              [ -n "${IMAGE_DIR}" ] && echo "⚠️  Fallback: using first subdir: ${IMAGE_DIR}"
+              [ -n "${IMAGE_DIR}" ] && \
+                echo "⚠️  Fallback: using first subdir: ${IMAGE_DIR}"
             fi
 
             if [ -z "${IMAGE_DIR}" ]; then
@@ -103,11 +101,13 @@ runs:
             fi
 
             echo "✅ Using image directory: ${IMAGE_DIR}"
+
+            # cd first — then build ROOTFS_IMG from $PWD so the path
+            # is always correct regardless of relative/absolute prefix
             cd "${IMAGE_DIR}"
             ls -larth
 
-            # rootfs.img is a regular file — safe to use directly
-            ROOTFS_IMG="${IMAGE_DIR}/rootfs.img"
+            ROOTFS_IMG="${PWD}/rootfs.img"
             echo "ROOTFS_IMG=${ROOTFS_IMG}"
             test -f "${ROOTFS_IMG}"
 
