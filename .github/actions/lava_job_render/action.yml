@@ -1,9 +1,8 @@
 name: LAVA Job Render
 description: >
-  Writes synthetic cloudData.json + metadata.json, patches the platform
-  config DTB, then renders a LAVA job definition using
-  lava_Job_definition_generator.py with BOOT_METHOD=flasher and
-  --video_pre-merge tests.
+  Writes synthetic cloudData.json + metadata.json, then renders a LAVA
+  job definition using lava_Job_definition_generator.py with
+  BOOT_METHOD=flasher and --video_pre-merge tests.
 
 inputs:
   docker_image:
@@ -53,6 +52,7 @@ runs:
         echo "artifact_url=$url" >> "$GITHUB_OUTPUT"
 
     - name: Write synthetic cloudData.json and metadata.json
+      id: write_json
       shell: bash
       env:
         MACHINE:      ${{ inputs.machine }}
@@ -74,18 +74,21 @@ runs:
         mkdir -p "$DATA_DIR"
 
         # Map machine → DTB filename (no path, no extension)
-        # Used to patch the platform config and metadata.json
+        # Passed as TARGET_DTB env var into the generator container
         case "$MACHINE" in
-          qcs9100-ride-sx)  DTB_NAME="qcs9100-ride-r3"  ;;
-          qcs8300-ride-sx)  DTB_NAME="qcs8300-ride"      ;;
-          rb3gen2-core-kit) DTB_NAME="qcs6490-rb3gen2"   ;;
-          qcs615-ride)      DTB_NAME="qcs615-ride"        ;;
-          sm8750-mtp)       DTB_NAME="sm8750-mtp"         ;;
-          kaanapali-mtp)    DTB_NAME="kaanapali-mtp"      ;;
-          *)                DTB_NAME="$MACHINE"           ;;
+          qcs9100-ride-sx)  DTB_NAME="qcs9100-ride-r3" ;;
+          qcs8300-ride-sx)  DTB_NAME="qcs8300-ride"    ;;
+          rb3gen2-core-kit) DTB_NAME="qcs6490-rb3gen2" ;;
+          qcs615-ride)      DTB_NAME="qcs615-ride"      ;;
+          sm8750-mtp)       DTB_NAME="sm8750-mtp"       ;;
+          kaanapali-mtp)    DTB_NAME="kaanapali-mtp"    ;;
+          *)                DTB_NAME="$MACHINE"         ;;
         esac
 
-        echo "📝 Writing cloudData.json (DTB: $DTB_NAME)"
+        echo "dtb_name=$DTB_NAME" >> "$GITHUB_OUTPUT"
+        echo "job_render_dir=$JOB_RENDER_DIR" >> "$GITHUB_OUTPUT"
+
+        echo "📝 Writing cloudData.json"
         cat > "$DATA_DIR/cloudData.json" << EOF
         {
           "id": "ci-${MACHINE}",
@@ -145,7 +148,7 @@ runs:
         EOF
         echo "✅ cloudData.json written"
 
-        echo "📝 Writing metadata.json (DTB key: dtbs/qcom/${DTB_NAME}.dtb)"
+        echo "📝 Writing metadata.json (DTB: dtbs/qcom/${DTB_NAME}.dtb)"
         cat > "$DATA_DIR/metadata.json" << EOF
         {
           "build": {
@@ -163,45 +166,6 @@ runs:
         EOF
         echo "✅ metadata.json written"
 
-        # ------------------------------------------------------------------
-        # Patch the platform config in job_render so target_dtb is not None.
-        # The generator reads platform_config from configs/<lavaname>.json
-        # (or similar). We find all JSON files under configs/ that reference
-        # the lavaname and inject the dtb field.
-        # ------------------------------------------------------------------
-        echo "🔧 Patching platform config for $LAVA_NAME (dtb=$DTB_NAME)"
-
-        CONFIGS_DIR="$JOB_RENDER_DIR/configs"
-        if [ ! -d "$CONFIGS_DIR" ]; then
-          # Try alternate locations
-          CONFIGS_DIR="$(find "$JOB_RENDER_DIR" -maxdepth 2 -type d \
-            \( -name 'configs' -o -name 'platform_configs' \) | head -n 1 || true)"
-        fi
-
-        if [ -n "$CONFIGS_DIR" ]; then
-          echo "📂 Found configs dir: $CONFIGS_DIR"
-          # Find config file matching lavaname
-          CONFIG_FILE="$(find "$CONFIGS_DIR" -maxdepth 2 -name "${LAVA_NAME}.json" \
-            | head -n 1 || true)"
-
-          if [ -n "$CONFIG_FILE" ]; then
-            echo "📄 Patching: $CONFIG_FILE"
-            TMP="$(mktemp)"
-            jq --arg dtb "$DTB_NAME" '.dtb = $dtb' "$CONFIG_FILE" > "$TMP"
-            mv "$TMP" "$CONFIG_FILE"
-            echo "✅ Patched dtb=$DTB_NAME in $CONFIG_FILE"
-            cat "$CONFIG_FILE"
-          else
-            echo "⚠️  No config file found for $LAVA_NAME in $CONFIGS_DIR"
-            echo "=== Available configs ==="
-            find "$CONFIGS_DIR" -maxdepth 2 -name "*.json" | sort
-          fi
-        else
-          echo "⚠️  No configs directory found under $JOB_RENDER_DIR"
-          echo "=== job_render tree (depth 3) ==="
-          find "$JOB_RENDER_DIR" -maxdepth 3 -print | sort
-        fi
-
     - name: Render LAVA job definition
       shell: bash
       env:
@@ -209,14 +173,17 @@ runs:
         MACHINE:      ${{ inputs.machine }}
         LAVA_NAME:    ${{ inputs.lavaname }}
         WORKSPACE:    ${{ github.workspace }}
+        # TARGET_DTB is the key the generator uses to look up the DTB
+        # in metadata.json — must match exactly (no path, no extension)
+        TARGET_DTB:   ${{ steps.write_json.outputs.dtb_name }}
       run: |
         set -euo pipefail
 
-        JOB_RENDER_DIR="$(dirname "$WORKSPACE")/job_render"
+        JOB_RENDER_DIR="${{ steps.write_json.outputs.job_render_dir }}"
         RENDERS_DIR="$JOB_RENDER_DIR/renders"
         mkdir -p "$RENDERS_DIR"
 
-        echo "🔧 Rendering LAVA job for machine=$MACHINE (lavaname=$LAVA_NAME)"
+        echo "🔧 Rendering LAVA job for machine=$MACHINE lavaname=$LAVA_NAME dtb=$TARGET_DTB"
 
         docker run -i --rm \
           --workdir="$JOB_RENDER_DIR" \
@@ -224,6 +191,8 @@ runs:
           -e MACHINE="$MACHINE" \
           -e TARGET="$MACHINE" \
           -e LAVA_NAME="$LAVA_NAME" \
+          -e TARGET_DTB="$TARGET_DTB" \
+          -e BOOT_METHOD="flasher" \
           "$DOCKER_IMAGE" \
           bash -c '
             set -euo pipefail

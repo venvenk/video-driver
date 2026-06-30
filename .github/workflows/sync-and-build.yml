@@ -173,6 +173,9 @@ jobs:
             exit 1
           fi
 
+          echo "=== qcomflash contents ==="
+          ls -larth "$resolved_dir"
+
           ORIGINAL_TAR="$WORKSPACE/downloads/meta/${META_S3_KEY}"
           tarball="${MACHINE}_qcomflash_payload.tar"
           OUTPUT_TAR="$WORKSPACE/$tarball"
@@ -180,34 +183,39 @@ jobs:
           mkdir -p "$WORKSPACE/artifacts"
           : > "$WORKSPACE/artifacts/file_list.txt"
 
-          # Detect compression — the S3 .tar files are gzip despite .tar ext
+          # ------------------------------------------------------------------
+          # The S3 .tar files are gzip-compressed despite the .tar extension.
+          # tar -rf only works on plain uncompressed archives so we must
+          # decompress first, then append the modified rootfs.img.
+          # ------------------------------------------------------------------
           FILETYPE="$(file -b "$ORIGINAL_TAR")"
           echo "📋 Detected archive type: $FILETYPE"
 
           if echo "$FILETYPE" | grep -qi "gzip"; then
-            echo "🗜️  gzip — decompressing to plain tar via zcat..."
+            echo "🗜️  gzip — streaming decompress to plain tar..."
             zcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "bzip2"; then
-            echo "🗜️  bzip2 — decompressing via bzcat..."
+            echo "🗜️  bzip2 — streaming decompress to plain tar..."
             bzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "\bXZ\b\|xz compressed"; then
-            echo "🗜️  xz — decompressing via xzcat..."
+            echo "🗜️  xz — streaming decompress to plain tar..."
             xzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "Zstandard"; then
-            echo "🗜️  zstd — decompressing via zstdcat..."
+            echo "🗜️  zstd — streaming decompress to plain tar..."
             zstdcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           else
-            echo "📋 Plain tar — copying directly..."
+            echo "📋 Plain tar (uncompressed) — copying directly..."
             cp "$ORIGINAL_TAR" "$OUTPUT_TAR"
           fi
 
           echo "✅ Base tar ready: $(ls -lh "$OUTPUT_TAR" | awk '{print $5}')"
 
-          echo "📦 Appending updated rootfs.img (tar -rf on plain tar)..."
+          echo "📦 Appending updated rootfs.img into plain tar..."
           tar -rf "$OUTPUT_TAR" \
             -C "$resolved_dir" \
             --transform 's|^|./|' \
             rootfs.img
+
           echo "✅ rootfs.img appended"
           ls -lh "$OUTPUT_TAR"
 
@@ -223,9 +231,7 @@ jobs:
           mode: multi-upload
           upload_location: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.build_matrix.machine }}
 
-      # Upload machine-specific presigned URLs so test.yml can download
-      # only the artifact it needs — avoids cross-machine key collisions
-      - name: Upload machine-scoped presigned URLs artifact
+      - name: Upload machine-specific presigned URLs artifact
         uses: actions/upload-artifact@v4
         with:
           name: presigned-urls-${{ matrix.build_matrix.machine }}
@@ -239,9 +245,9 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          rm -rf "$WORKSPACE/artifacts"  || true
-          rm -rf "$WORKSPACE/build"      || true
-          rm -rf "$WORKSPACE/downloads"  || true
+          rm -rf "$WORKSPACE/artifacts"        || true
+          rm -rf "$WORKSPACE/build"            || true
+          rm -rf "$WORKSPACE/downloads"        || true
           rm -f  "$WORKSPACE/"*_qcomflash_payload.tar || true
 
       - name: Update summary
