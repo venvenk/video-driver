@@ -48,31 +48,66 @@ runs:
             echo "=== Contents of machine directory ==="
             ls -la "${IMAGE_BASE_DIR}" || true
 
-            # Match both real directories AND symlinks named *.qcomflash
+            # -----------------------------------------------------------
+            # Resolve IMAGE_DIR safely inside the container.
+            #
+            # The symlink was created on the host with an absolute host
+            # path as its target — that path does not exist inside the
+            # container.  So we NEVER call realpath/readlink -f on it.
+            # Instead:
+            #   1. Prefer a real *.qcomflash directory (type d).
+            #   2. If only a symlink exists, extract the target *basename*
+            #      and rebuild the path relative to IMAGE_BASE_DIR.
+            #   3. Final fallback: first real subdirectory in IMAGE_BASE_DIR.
+            # -----------------------------------------------------------
+
+            IMAGE_DIR=""
+
+            # 1. Real *.qcomflash directory?
             IMAGE_DIR="$(
-              find "${IMAGE_BASE_DIR}" -maxdepth 1 \
-                \( -type d -o -type l \) \
-                -name "*.qcomflash" \
-              | sort | head -n 1 || true
+              find "${IMAGE_BASE_DIR}" -maxdepth 1 -type d \
+                -name "*.qcomflash" | sort | head -n 1 || true
             )"
 
+            # 2. Symlink named *.qcomflash — use basename of its target
             if [ -z "${IMAGE_DIR}" ]; then
-              echo "❌ No .qcomflash directory or symlink found under ${IMAGE_BASE_DIR}"
-              echo "=== Full contents under machine directory ==="
+              SYMLINK="$(
+                find "${IMAGE_BASE_DIR}" -maxdepth 1 -type l \
+                  -name "*.qcomflash" | sort | head -n 1 || true
+              )"
+              if [ -n "${SYMLINK}" ]; then
+                TARGET_BASENAME="$(basename "$(readlink "${SYMLINK}")")"
+                CANDIDATE="${IMAGE_BASE_DIR}/${TARGET_BASENAME}"
+                if [ -d "${CANDIDATE}" ]; then
+                  IMAGE_DIR="${CANDIDATE}"
+                  echo "✅ Resolved symlink target basename to: ${IMAGE_DIR}"
+                else
+                  echo "⚠️  Symlink target basename ${CANDIDATE} is not a directory"
+                fi
+              fi
+            fi
+
+            # 3. Fallback: first real subdirectory
+            if [ -z "${IMAGE_DIR}" ]; then
+              IMAGE_DIR="$(
+                find "${IMAGE_BASE_DIR}" -maxdepth 1 -mindepth 1 \
+                  -type d | sort | head -n 1 || true
+              )"
+              [ -n "${IMAGE_DIR}" ] && echo "⚠️  Fallback: using first subdir: ${IMAGE_DIR}"
+            fi
+
+            if [ -z "${IMAGE_DIR}" ]; then
+              echo "❌ Could not locate payload directory under ${IMAGE_BASE_DIR}"
               find "${IMAGE_BASE_DIR}" -maxdepth 2 -print | sort || true
               exit 1
             fi
 
             echo "✅ Using image directory: ${IMAGE_DIR}"
-
-            # Resolve symlink so subsequent paths are absolute real paths
-            IMAGE_DIR="$(realpath "${IMAGE_DIR}")"
-            echo "✅ Resolved to: ${IMAGE_DIR}"
-
             cd "${IMAGE_DIR}"
             ls -larth
 
-            ROOTFS_IMG="$(realpath rootfs.img)"
+            # rootfs.img is a regular file — safe to use directly
+            ROOTFS_IMG="${IMAGE_DIR}/rootfs.img"
             echo "ROOTFS_IMG=${ROOTFS_IMG}"
             test -f "${ROOTFS_IMG}"
 
@@ -128,10 +163,12 @@ runs:
             mkdir -p /tmp/rootfs/data/vendor/iris_test_app/output
 
             echo "📥 Copying IRIS app payload from workspace..."
-            cp -a "${WORKSPACE}/v4l-video-test-app/build/." /tmp/rootfs/data/vendor/iris_test_app/
+            cp -a "${WORKSPACE}/v4l-video-test-app/build/." \
+               /tmp/rootfs/data/vendor/iris_test_app/
 
             echo "📥 Copying video tarball into rootfs (no extraction)..."
-            cp -a "${WORKSPACE}/downloads/video_clips_iris.tar.gz" /tmp/rootfs/data/vendor/iris_test_app/
+            cp -a "${WORKSPACE}/downloads/video_clips_iris.tar.gz" \
+               /tmp/rootfs/data/vendor/iris_test_app/
 
             echo "🔍 Verifying injected files..."
             ls -larth /tmp/rootfs/data/vendor/iris_test_app
