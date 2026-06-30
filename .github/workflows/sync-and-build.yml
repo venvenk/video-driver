@@ -104,6 +104,7 @@ jobs:
 
           SYMLINK_NAME="qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
           ln -sfn "$QCOMFLASH_DIR" "$DEPLOY_DIR/$SYMLINK_NAME"
+
           echo "✅ Symlink: $DEPLOY_DIR/$SYMLINK_NAME → $QCOMFLASH_DIR"
           ls -la "$DEPLOY_DIR/"
 
@@ -128,7 +129,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$WORKSPACE/downloads"
-          echo "Downloading video-content files"
           wget -q \
             "https://github.com/qualcomm-linux/qcom-linux-testkit/releases/download/IRIS-Video-Files-v1.0/video_clips_iris.tar.gz" \
             -O "$WORKSPACE/downloads/video_clips_iris.tar.gz"
@@ -161,6 +161,7 @@ jobs:
           fi
 
           resolved_dir=$(readlink -f "$symlink_path")
+
           if [ ! -d "$resolved_dir" ]; then
             echo "❌ Resolved .qcomflash directory not found: $resolved_dir"
             exit 1
@@ -179,22 +180,24 @@ jobs:
           mkdir -p "$WORKSPACE/artifacts"
           : > "$WORKSPACE/artifacts/file_list.txt"
 
-          # Detect compression type — S3 .tar files are sometimes gzip
-          # despite the .tar extension so we cannot assume plain tar
+          # ----------------------------------------------------------------
+          # Detect compression — S3 .tar files are sometimes gzip-compressed
+          # despite the .tar extension. tar -rf only works on plain tars.
+          # ----------------------------------------------------------------
           FILETYPE="$(file -b "$ORIGINAL_TAR")"
-          echo "📋 Archive type: $FILETYPE"
+          echo "📋 Detected archive type: $FILETYPE"
 
           if echo "$FILETYPE" | grep -qi "gzip"; then
-            echo "🗜️  gzip detected — streaming decompress to plain tar..."
+            echo "🗜️  gzip — streaming decompress to plain tar..."
             zcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "bzip2"; then
-            echo "🗜️  bzip2 detected — streaming decompress to plain tar..."
+            echo "🗜️  bzip2 — streaming decompress to plain tar..."
             bzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "\bXZ\b\|xz compressed"; then
-            echo "🗜️  xz detected — streaming decompress to plain tar..."
+            echo "🗜️  xz — streaming decompress to plain tar..."
             xzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           elif echo "$FILETYPE" | grep -qi "Zstandard"; then
-            echo "🗜️  zstd detected — streaming decompress to plain tar..."
+            echo "🗜️  zstd — streaming decompress to plain tar..."
             zstdcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
           else
             echo "📋 Plain tar — copying directly..."
@@ -224,12 +227,10 @@ jobs:
           mode: multi-upload
           upload_location: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.build_matrix.machine }}
 
-      # Upload machine-scoped presigned URLs so test.yml can download
-      # ONLY this machine's key — avoids cross-machine overwrite
       - name: Upload machine-scoped presigned URLs artifact
         uses: actions/upload-artifact@v4
         with:
-          name: presigned-urls-${{ matrix.build_matrix.machine }}
+          name: presigned_urls-${{ matrix.build_matrix.machine }}
           path: ${{ github.workspace }}/presigned_urls.json
           retention-days: 3
 
