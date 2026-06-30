@@ -44,11 +44,12 @@ jobs:
             "artifacts.codelinaro.org/clo-420-qli-registry/${{ inputs.docker_image }}" \
             "${{ inputs.docker_image }}" || true
 
-      - name: Download machine-specific presigned URLs
+      # Name matches exactly what sync-and-build uploads:
+      # presigned-urls-{machine}  (hyphen separator throughout)
+      - name: Download machine-scoped presigned URLs
         uses: actions/download-artifact@v4
         with:
-          # Must match the upload name in sync-and-build.yml
-          name: presigned_urls-${{ matrix.build_matrix.machine }}
+          name: presigned-urls-${{ matrix.build_matrix.machine }}
           path: ${{ github.workspace }}
 
       - name: Verify presigned_urls.json
@@ -58,7 +59,7 @@ jobs:
           MACHINE:   ${{ matrix.build_matrix.machine }}
         run: |
           set -euo pipefail
-          echo "=== presigned_urls.json keys for $MACHINE ==="
+          echo "=== presigned_urls.json keys ==="
           jq -r 'keys[]' "$WORKSPACE/presigned_urls.json"
 
       - name: Clone LAVA job render scripts
@@ -93,7 +94,7 @@ jobs:
               --workdir="$JOB_RENDER_DIR" \
               -v "$(dirname "$JOB_RENDER_DIR"):$(dirname "$JOB_RENDER_DIR")" \
               "$DOCKER_IMAGE" \
-              sh -c "
+              bash -c "
                 lavacli identities add \
                   --token \"$LAVA_OSS_TOKEN\" \
                   --uri https://lava-oss.qualcomm.com/RPC2 \
@@ -117,7 +118,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '{"id":"%s","machine":"%s"}\n' \
-            "$JOB_ID" "$MACHINE" > "lava-job-${MACHINE}.json"
+            "${JOB_ID:-unknown}" "$MACHINE" > "lava-job-${MACHINE}.json"
 
       - name: Upload Job ID artifact
         if: always()
@@ -158,7 +159,7 @@ jobs:
                 --workdir="$JOB_RENDER_DIR" \
                 -v "$(dirname "$JOB_RENDER_DIR"):$(dirname "$JOB_RENDER_DIR")" \
                 "$DOCKER_IMAGE" \
-                sh -c "
+                bash -c "
                   lavacli identities add \
                     --token \"$LAVA_OSS_TOKEN\" \
                     --uri https://lava-oss.qualcomm.com/RPC2 \
@@ -194,7 +195,7 @@ jobs:
             --workdir="$JOB_RENDER_DIR" \
             -v "$(dirname "$JOB_RENDER_DIR"):$(dirname "$JOB_RENDER_DIR")" \
             "$DOCKER_IMAGE" \
-            sh -c "
+            bash -c "
               lavacli identities add \
                 --token \"$LAVA_OSS_TOKEN\" \
                 --uri https://lava-oss.qualcomm.com/RPC2 \
