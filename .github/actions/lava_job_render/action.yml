@@ -3,6 +3,7 @@ description: >
   Writes synthetic cloudData.json + metadata.json, then renders a LAVA
   job definition using lava_Job_definition_generator.py with
   BOOT_METHOD=flasher and --video_pre-merge tests.
+  Also patches the download timeout to 120 minutes for large tarballs.
 
 inputs:
   docker_image:
@@ -52,7 +53,6 @@ runs:
         echo "artifact_url=$url" >> "$GITHUB_OUTPUT"
 
     - name: Write synthetic cloudData.json and metadata.json
-      id: write_json
       shell: bash
       env:
         MACHINE:      ${{ inputs.machine }}
@@ -73,22 +73,18 @@ runs:
         DATA_DIR="$JOB_RENDER_DIR/data"
         mkdir -p "$DATA_DIR"
 
-        # Map machine → DTB filename (no path, no extension)
-        # Passed as TARGET_DTB env var into the generator container
+        # Map machine → DTB filename for metadata.json
         case "$MACHINE" in
-          qcs9100-ride-sx)  DTB_NAME="qcs9100-ride-r3" ;;
-          qcs8300-ride-sx)  DTB_NAME="qcs8300-ride"    ;;
-          rb3gen2-core-kit) DTB_NAME="qcs6490-rb3gen2" ;;
-          qcs615-ride)      DTB_NAME="qcs615-ride"      ;;
-          sm8750-mtp)       DTB_NAME="sm8750-mtp"       ;;
-          kaanapali-mtp)    DTB_NAME="kaanapali-mtp"    ;;
-          *)                DTB_NAME="$MACHINE"         ;;
+          qcs9100-ride-sx)  DTB_NAME="qcs9100-ride-r3"  ;;
+          qcs8300-ride-sx)  DTB_NAME="qcs8300-ride"      ;;
+          rb3gen2-core-kit) DTB_NAME="qcs6490-rb3gen2"   ;;
+          qcs615-ride)      DTB_NAME="qcs615-ride"        ;;
+          sm8750-mtp)       DTB_NAME="sm8750-mtp"         ;;
+          kaanapali-mtp)    DTB_NAME="kaanapali-mtp"      ;;
+          *)                DTB_NAME="$MACHINE"           ;;
         esac
 
-        echo "dtb_name=$DTB_NAME" >> "$GITHUB_OUTPUT"
-        echo "job_render_dir=$JOB_RENDER_DIR" >> "$GITHUB_OUTPUT"
-
-        echo "📝 Writing cloudData.json"
+        echo "📝 Writing cloudData.json (machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME)"
         cat > "$DATA_DIR/cloudData.json" << EOF
         {
           "id": "ci-${MACHINE}",
@@ -148,7 +144,7 @@ runs:
         EOF
         echo "✅ cloudData.json written"
 
-        echo "📝 Writing metadata.json (DTB: dtbs/qcom/${DTB_NAME}.dtb)"
+        echo "📝 Writing metadata.json (DTB key: dtbs/qcom/${DTB_NAME}.dtb)"
         cat > "$DATA_DIR/metadata.json" << EOF
         {
           "build": {
@@ -173,17 +169,25 @@ runs:
         MACHINE:      ${{ inputs.machine }}
         LAVA_NAME:    ${{ inputs.lavaname }}
         WORKSPACE:    ${{ github.workspace }}
-        # TARGET_DTB is the key the generator uses to look up the DTB
-        # in metadata.json — must match exactly (no path, no extension)
-        TARGET_DTB:   ${{ steps.write_json.outputs.dtb_name }}
       run: |
         set -euo pipefail
 
-        JOB_RENDER_DIR="${{ steps.write_json.outputs.job_render_dir }}"
+        JOB_RENDER_DIR="$(dirname "$WORKSPACE")/job_render"
         RENDERS_DIR="$JOB_RENDER_DIR/renders"
         mkdir -p "$RENDERS_DIR"
 
-        echo "🔧 Rendering LAVA job for machine=$MACHINE lavaname=$LAVA_NAME dtb=$TARGET_DTB"
+        # Map machine → DTB name (must match what metadata.json has)
+        case "$MACHINE" in
+          qcs9100-ride-sx)  DTB_NAME="qcs9100-ride-r3"  ;;
+          qcs8300-ride-sx)  DTB_NAME="qcs8300-ride"      ;;
+          rb3gen2-core-kit) DTB_NAME="qcs6490-rb3gen2"   ;;
+          qcs615-ride)      DTB_NAME="qcs615-ride"        ;;
+          sm8750-mtp)       DTB_NAME="sm8750-mtp"         ;;
+          kaanapali-mtp)    DTB_NAME="kaanapali-mtp"      ;;
+          *)                DTB_NAME="$MACHINE"           ;;
+        esac
+
+        echo "🔧 Rendering LAVA job: machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME"
 
         docker run -i --rm \
           --workdir="$JOB_RENDER_DIR" \
@@ -191,8 +195,7 @@ runs:
           -e MACHINE="$MACHINE" \
           -e TARGET="$MACHINE" \
           -e LAVA_NAME="$LAVA_NAME" \
-          -e TARGET_DTB="$TARGET_DTB" \
-          -e BOOT_METHOD="flasher" \
+          -e TARGET_DTB="$DTB_NAME" \
           "$DOCKER_IMAGE" \
           bash -c '
             set -euo pipefail
@@ -206,3 +209,54 @@ runs:
         echo "✅ LAVA job definition rendered"
         echo "=== Rendered YAML ==="
         cat "$RENDERS_DIR/lava_job_definition.yaml"
+
+    - name: Patch LAVA job download timeout
+      shell: bash
+      env:
+        WORKSPACE: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+
+        JOB_RENDER_DIR="$(dirname "$WORKSPACE")/job_render"
+        YAML="$JOB_RENDER_DIR/renders/lava_job_definition.yaml"
+
+        if [ ! -f "$YAML" ]; then
+          echo "❌ Rendered YAML not found: $YAML"
+          exit 1
+        fi
+
+        echo "🔧 Patching download timeout from 30 to 120 minutes..."
+
+        # The flasher.jinja2 template hardcodes: timeout:\n   minutes: 30
+        # The ~11 GB tar needs at least 90 min — set to 120 to be safe.
+        # Use Python for reliable multi-line YAML patching without a YAML parser dep.
+        python3 - "$YAML" << 'PYEOF'
+        import sys, re
+
+        path = sys.argv[1]
+        with open(path, 'r') as f:
+            content = f.read()
+
+        # Replace the downloads section timeout (minutes: 30) with minutes: 120
+        # Pattern matches the specific downloads block timeout
+        patched = re.sub(
+            r'(- deploy:.*?timeout:\s*\n\s*minutes:)\s*30',
+            r'\g<1> 120',
+            content,
+            flags=re.DOTALL
+        )
+
+        # Also patch any standalone "minutes: 30" under a timeout block
+        # that belongs to the download step — replace first occurrence only
+        if patched == content:
+            # Fallback: replace first occurrence of minutes: 30
+            patched = content.replace('minutes: 30', 'minutes: 120', 1)
+
+        with open(path, 'w') as f:
+            f.write(patched)
+
+        print("✅ Timeout patched to 120 minutes")
+        PYEOF
+
+        echo "=== Patched YAML ==="
+        cat "$YAML"
