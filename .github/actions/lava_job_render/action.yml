@@ -1,8 +1,9 @@
 name: LAVA Job Render
 description: >
-  Writes synthetic cloudData.json + metadata.json, then renders a LAVA
-  job definition using lava_Job_definition_generator.py with
-  BOOT_METHOD=flasher and --video_pre-merge tests.
+  Writes synthetic cloudData.json + metadata.json, patches the platform
+  config DTB, then renders a LAVA job definition using
+  lava_Job_definition_generator.py with BOOT_METHOD=flasher and
+  --video_pre-merge tests.
 
 inputs:
   docker_image:
@@ -72,42 +73,19 @@ runs:
         DATA_DIR="$JOB_RENDER_DIR/data"
         mkdir -p "$DATA_DIR"
 
-        # ------------------------------------------------------------------
-        # Map machine name to its DTB path used by fetch_and_update_dtb.
-        # The flasher template does not use the DTB at flash time, but the
-        # generator still calls fetch_and_update_dtb() and will crash with
-        # TypeError if metadata.json is missing or the key is absent.
-        # We write a metadata.json with an empty URL — sufficient to prevent
-        # the crash without affecting the flasher job definition.
-        # ------------------------------------------------------------------
+        # Map machine → DTB filename (no path, no extension)
+        # Used to patch the platform config and metadata.json
         case "$MACHINE" in
-          qcs9100-ride-sx)   DTB_KEY="dtbs/qcom/qcs9100-ride-r3.dtb" ;;
-          qcs8300-ride-sx)   DTB_KEY="dtbs/qcom/qcs8300-ride.dtb"    ;;
-          rb3gen2-core-kit)  DTB_KEY="dtbs/qcom/qcs6490-rb3gen2.dtb" ;;
-          qcs615-ride)       DTB_KEY="dtbs/qcom/qcs615-ride.dtb"      ;;
-          sm8750-mtp)        DTB_KEY="dtbs/qcom/sm8750-mtp.dtb"       ;;
-          kaanapali-mtp)     DTB_KEY="dtbs/qcom/kaanapali-mtp.dtb"    ;;
-          *)                 DTB_KEY="dtbs/qcom/${MACHINE}.dtb"       ;;
+          qcs9100-ride-sx)  DTB_NAME="qcs9100-ride-r3"  ;;
+          qcs8300-ride-sx)  DTB_NAME="qcs8300-ride"      ;;
+          rb3gen2-core-kit) DTB_NAME="qcs6490-rb3gen2"   ;;
+          qcs615-ride)      DTB_NAME="qcs615-ride"        ;;
+          sm8750-mtp)       DTB_NAME="sm8750-mtp"         ;;
+          kaanapali-mtp)    DTB_NAME="kaanapali-mtp"      ;;
+          *)                DTB_NAME="$MACHINE"           ;;
         esac
 
-        echo "📝 Writing metadata.json (DTB key: $DTB_KEY)"
-        cat > "$DATA_DIR/metadata.json" << EOF
-        {
-          "build": {
-            "arch": "arm64",
-            "compiler": "gcc-12",
-            "defconfig": "defconfig",
-            "fragments": [],
-            "config_full": "defconfig",
-            "result": "pass"
-          },
-          "artifacts": {
-            "${DTB_KEY}": ""
-          }
-        }
-        EOF
-
-        echo "📝 Writing cloudData.json"
+        echo "📝 Writing cloudData.json (DTB: $DTB_NAME)"
         cat > "$DATA_DIR/cloudData.json" << EOF
         {
           "id": "ci-${MACHINE}",
@@ -165,11 +143,64 @@ runs:
           "submitter": "service:pipeline"
         }
         EOF
-
         echo "✅ cloudData.json written"
-        cat "$DATA_DIR/cloudData.json"
+
+        echo "📝 Writing metadata.json (DTB key: dtbs/qcom/${DTB_NAME}.dtb)"
+        cat > "$DATA_DIR/metadata.json" << EOF
+        {
+          "build": {
+            "arch": "arm64",
+            "compiler": "gcc-12",
+            "defconfig": "defconfig",
+            "fragments": [],
+            "config_full": "defconfig",
+            "result": "pass"
+          },
+          "artifacts": {
+            "dtbs/qcom/${DTB_NAME}.dtb": ""
+          }
+        }
+        EOF
         echo "✅ metadata.json written"
-        cat "$DATA_DIR/metadata.json"
+
+        # ------------------------------------------------------------------
+        # Patch the platform config in job_render so target_dtb is not None.
+        # The generator reads platform_config from configs/<lavaname>.json
+        # (or similar). We find all JSON files under configs/ that reference
+        # the lavaname and inject the dtb field.
+        # ------------------------------------------------------------------
+        echo "🔧 Patching platform config for $LAVA_NAME (dtb=$DTB_NAME)"
+
+        CONFIGS_DIR="$JOB_RENDER_DIR/configs"
+        if [ ! -d "$CONFIGS_DIR" ]; then
+          # Try alternate locations
+          CONFIGS_DIR="$(find "$JOB_RENDER_DIR" -maxdepth 2 -type d \
+            \( -name 'configs' -o -name 'platform_configs' \) | head -n 1 || true)"
+        fi
+
+        if [ -n "$CONFIGS_DIR" ]; then
+          echo "📂 Found configs dir: $CONFIGS_DIR"
+          # Find config file matching lavaname
+          CONFIG_FILE="$(find "$CONFIGS_DIR" -maxdepth 2 -name "${LAVA_NAME}.json" \
+            | head -n 1 || true)"
+
+          if [ -n "$CONFIG_FILE" ]; then
+            echo "📄 Patching: $CONFIG_FILE"
+            TMP="$(mktemp)"
+            jq --arg dtb "$DTB_NAME" '.dtb = $dtb' "$CONFIG_FILE" > "$TMP"
+            mv "$TMP" "$CONFIG_FILE"
+            echo "✅ Patched dtb=$DTB_NAME in $CONFIG_FILE"
+            cat "$CONFIG_FILE"
+          else
+            echo "⚠️  No config file found for $LAVA_NAME in $CONFIGS_DIR"
+            echo "=== Available configs ==="
+            find "$CONFIGS_DIR" -maxdepth 2 -name "*.json" | sort
+          fi
+        else
+          echo "⚠️  No configs directory found under $JOB_RENDER_DIR"
+          echo "=== job_render tree (depth 3) ==="
+          find "$JOB_RENDER_DIR" -maxdepth 3 -print | sort
+        fi
 
     - name: Render LAVA job definition
       shell: bash
