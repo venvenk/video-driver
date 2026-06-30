@@ -17,21 +17,24 @@ runs:
           const fs = require('fs');
           const path = require('path');
 
-          const machineFile = path.join(process.env.GITHUB_WORKSPACE, 'ci', 'MACHINES.json');
+          const machineFile = path.join(
+            process.env.GITHUB_WORKSPACE, 'ci', 'MACHINES.json'
+          );
 
-          let config;
-          try {
-            if (!fs.existsSync(machineFile)) {
-              core.setFailed(`MACHINES.json not found at ${machineFile}`);
-              return;
-            }
-
-            config = JSON.parse(fs.readFileSync(machineFile, 'utf-8'));
-          } catch (err) {
-            core.setFailed(`Failed to load or parse MACHINES.json: ${err.message}`);
+          if (!fs.existsSync(machineFile)) {
+            core.setFailed(`MACHINES.json not found at ${machineFile}`);
             return;
           }
 
+          let config;
+          try {
+            config = JSON.parse(fs.readFileSync(machineFile, 'utf-8'));
+          } catch (err) {
+            core.setFailed(`Failed to parse MACHINES.json: ${err.message}`);
+            return;
+          }
+
+          // Emit all fields so build + test jobs can consume what they need
           const buildMatrix = Object.values(config).map(obj => ({ ...obj }));
           core.setOutput('build_matrix', JSON.stringify(buildMatrix));
-          console.log('Build Matrix:', buildMatrix);
+          console.log('Build Matrix:', JSON.stringify(buildMatrix, null, 2));

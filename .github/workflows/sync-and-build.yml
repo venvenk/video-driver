@@ -14,7 +14,7 @@ on:
 
 jobs:
   build:
-    timeout-minutes: 720
+    timeout-minutes: 120
     runs-on:
       group: GHA-video-Prd-SelfHosted-RG
       labels: [self-hosted, video-prd-u2204-x64-large-od-ephem]
@@ -25,27 +25,12 @@ jobs:
 
     steps:
       - name: Sync video-driver codebase
-        uses: qualcomm-linux/video-driver/.github/actions/sync@meta-qcom_full-build
+        uses: qualcomm-linux/video-driver/.github/actions/sync@meta-qcom_full-build-copy
         with:
           event_name: ${{ github.event_name }}
           pr_ref: ${{ github.event.pull_request.head.ref || '' }}
           pr_repo: ${{ github.event.pull_request.head.repo.full_name || '' }}
           base_ref: ${{ github.ref_name }}
-
-      - name: Clone meta-qcom as sibling repo
-        shell: bash
-        run: |
-          set -euo pipefail
-          PARENT_DIR="$(dirname "${{ github.workspace }}")"
-          META_QCOM_DIR="${PARENT_DIR}/meta-qcom"
-
-          rm -rf "${META_QCOM_DIR}"
-          git clone --depth 1 https://github.com/qualcomm-linux/meta-qcom "${META_QCOM_DIR}"
-
-          echo "=== parent workspace ==="
-          ls -la "${PARENT_DIR}"
-          echo "=== meta-qcom/ci ==="
-          ls -la "${META_QCOM_DIR}/ci" || true
 
       - name: Pull Docker image
         uses: qualcomm-linux/kernel-config/.github/actions/pull_docker_image@main
@@ -60,129 +45,180 @@ jobs:
           docker tag \
             "artifacts.codelinaro.org/clo-420-qli-registry/${{ inputs.docker_image }}" \
             "${{ inputs.docker_image }}" || true
-          docker images | grep kmake-image || true
 
-      - name: Patch meta-qcom recipe to current video-driver commit
+      # ------------------------------------------------------------------ #
+      # Download the pre-built .qcomflash tarball from the stable S3 path  #
+      # ------------------------------------------------------------------ #
+      - name: Download pre-built meta artifact from S3
         shell: bash
+        env:
+          WORKSPACE: ${{ github.workspace }}
+          MACHINE: ${{ matrix.build_matrix.machine }}
+          META_S3_KEY: ${{ matrix.build_matrix.meta_s3_key }}
         run: |
           set -euo pipefail
-          bash ci/patch_srcrev.sh \
-            "${{ github.workspace }}" \
-            "$(dirname "${{ github.workspace }}")/meta-qcom" \
-            "${{ github.event.pull_request.head.repo.full_name || '' }}"
 
-      - name: Build ${{ matrix.build_matrix.machine }}
-        uses: qualcomm-linux/video-driver/.github/actions/build@meta-qcom_full-build
-        with:
-          docker_image: ${{ inputs.docker_image }}
-          kas_file: ${{ matrix.build_matrix.kas_file }}
-          build_command: "bitbake qcom-multimedia-proprietary-image"
+          S3_URI="s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/artifacts/meta/${META_S3_KEY}"
+          DOWNLOAD_DIR="$WORKSPACE/downloads/meta"
+          mkdir -p "$DOWNLOAD_DIR"
+
+          echo "📥 Downloading: $S3_URI"
+          aws s3 cp "$S3_URI" "$DOWNLOAD_DIR/"
+          echo "✅ Download complete"
+          ls -lh "$DOWNLOAD_DIR/"
+
+      # ------------------------------------------------------------------ #
+      # Extract to the same layout the inject action expects:               #
+      # build/tmp/deploy/images/<machine>/<name>.rootfs.qcomflash/         #
+      # ------------------------------------------------------------------ #
+      - name: Extract .qcomflash tarball
+        shell: bash
         env:
-          machine: ${{ matrix.build_matrix.machine }}
+          WORKSPACE: ${{ github.workspace }}
+          MACHINE: ${{ matrix.build_matrix.machine }}
+          META_S3_KEY: ${{ matrix.build_matrix.meta_s3_key }}
+        run: |
+          set -euo pipefail
+
+          TARBALL="$WORKSPACE/downloads/meta/${META_S3_KEY}"
+          DEPLOY_DIR="$WORKSPACE/build/tmp/deploy/images/$MACHINE"
+          mkdir -p "$DEPLOY_DIR"
+
+          echo "📦 Extracting $TARBALL → $DEPLOY_DIR"
+          tar -xf "$TARBALL" -C "$DEPLOY_DIR"
+
+          echo "=== Extracted contents ==="
+          ls -larth "$DEPLOY_DIR"
+
+          # Verify the .qcomflash directory is present
+          QCOMFLASH_DIR="$(find "$DEPLOY_DIR" -maxdepth 1 -type d -name '*.qcomflash' | head -n 1 || true)"
+          if [ -z "$QCOMFLASH_DIR" ]; then
+            echo "❌ No .qcomflash directory found under $DEPLOY_DIR"
+            exit 1
+          fi
+
+          # Create symlink that the inject action resolves via readlink -f
+          SYMLINK_NAME="qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
+          ln -sfn "$(basename "$QCOMFLASH_DIR")" "$DEPLOY_DIR/$SYMLINK_NAME"
+          echo "✅ Symlink created: $DEPLOY_DIR/$SYMLINK_NAME → $(basename "$QCOMFLASH_DIR")"
+          ls -larth "$DEPLOY_DIR/"
 
       - name: Download iris_test_app from S3
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${{ github.workspace }}/v4l-video-test-app/build"
-          echo "Syncing files from s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/iris_test_app/"
+          echo "Syncing iris_test_app from S3..."
           aws s3 sync \
             "s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/iris_test_app/" \
             "${{ github.workspace }}/v4l-video-test-app/build/"
-          echo "✅ Download complete"
+          echo "✅ iris_test_app download complete"
           ls -la "${{ github.workspace }}/v4l-video-test-app/build/"
 
-      - name: Download the video-contents for testing
+      - name: Download video clips for testing
         shell: bash
         env:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          mkdir -p "${{ github.workspace }}/downloads"
-          echo "Downloading the video-content files"
+          mkdir -p "$WORKSPACE/downloads"
+          echo "📥 Downloading video clips..."
           wget -q \
             "https://github.com/qualcomm-linux/qcom-linux-testkit/releases/download/IRIS-Video-Files-v1.0/video_clips_iris.tar.gz" \
-            -O "${{ github.workspace }}/downloads/video_clips_iris.tar.gz"
-
+            -O "$WORKSPACE/downloads/video_clips_iris.tar.gz"
           [ -f "$WORKSPACE/downloads/video_clips_iris.tar.gz" ] || {
             echo "❌ Failed to download video_clips_iris.tar.gz"
             exit 1
           }
+          echo "✅ Video clips downloaded"
 
-          ls -la "${{ github.workspace }}/downloads/"
-
-      - name: Inject Iris test app to rootfs
-        uses: qualcomm-linux/video-driver/.github/actions/inject@meta-qcom_full-build
+      - name: Inject Iris test app into rootfs
+        uses: qualcomm-linux/video-driver/.github/actions/inject@meta-qcom_full-build-copy
         with:
           docker_image: ${{ inputs.docker_image }}
           machine: ${{ matrix.build_matrix.machine }}
 
-      - name: Prepare .qcomflash files for S3 upload
+      - name: Fix workspace ownership
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
-          workspace="${{ github.workspace }}"
-          machine="${{ matrix.build_matrix.machine }}"
-          symlink_path="$workspace/build/tmp/deploy/images/$machine/qcom-multimedia-proprietary-image-${machine}.rootfs.qcomflash"
+          echo "🔧 Fixing file ownership..."
+          sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}"
 
-          if [ ! -L "$symlink_path" ]; then
-            echo "❌ Symlink not found: $symlink_path"
+      # ------------------------------------------------------------------ #
+      # Repack the .qcomflash directory (now with injected rootfs) as .xz  #
+      # ------------------------------------------------------------------ #
+      - name: Repack .qcomflash directory to tar.xz
+        shell: bash
+        env:
+          WORKSPACE: ${{ github.workspace }}
+          MACHINE: ${{ matrix.build_matrix.machine }}
+        run: |
+          set -euo pipefail
+
+          DEPLOY_DIR="$WORKSPACE/build/tmp/deploy/images/$MACHINE"
+          SYMLINK_PATH="$DEPLOY_DIR/qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
+
+          if [ ! -L "$SYMLINK_PATH" ]; then
+            echo "❌ Symlink not found: $SYMLINK_PATH"
             exit 1
           fi
 
-          resolved_dir=$(readlink -f "$symlink_path")
-
-          if [ ! -d "$resolved_dir" ]; then
-            echo "❌ Resolved .qcomflash directory not found: $resolved_dir"
+          RESOLVED_DIR="$(readlink -f "$SYMLINK_PATH")"
+          if [ ! -d "$RESOLVED_DIR" ]; then
+            echo "❌ Resolved .qcomflash directory not found: $RESOLVED_DIR"
             exit 1
           fi
 
-          cd "$resolved_dir"
-          ls -larth
+          echo "=== Contents to repack ==="
+          ls -larth "$RESOLVED_DIR"
 
-          mkdir -p "$workspace/artifacts"
-          : > "$workspace/artifacts/file_list.txt"
-          : > "$workspace/artifacts/tar_list.txt"
+          mkdir -p "$WORKSPACE/artifacts"
+          : > "$WORKSPACE/artifacts/file_list.txt"
 
-          find "$resolved_dir" -type f -exec realpath {} \; > "$workspace/artifacts/tar_list.txt"
+          TARBALL="${MACHINE}_qcomflash_payload.tar.xz"
 
-          if [ ! -s "$workspace/artifacts/tar_list.txt" ]; then
-            echo "⚠️ No files found to archive."
+          find "$RESOLVED_DIR" -type f -exec realpath {} \; > "$WORKSPACE/artifacts/tar_list.txt"
+
+          if [ ! -s "$WORKSPACE/artifacts/tar_list.txt" ]; then
+            echo "❌ No files found to archive"
             exit 1
           fi
 
-          tarball="${machine}_qcomflash_payload.tar.xz"
-          tar -cJf "$tarball" -T "$workspace/artifacts/tar_list.txt"
-          mv "$tarball" "$workspace"
-          echo "$workspace/$tarball" >> "$workspace/artifacts/file_list.txt"
+          tar -cJf "$TARBALL" -T "$WORKSPACE/artifacts/tar_list.txt"
+          mv "$TARBALL" "$WORKSPACE/"
+          echo "$WORKSPACE/$TARBALL" >> "$WORKSPACE/artifacts/file_list.txt"
 
-          echo "✅ Tarball created: $tarball"
+          echo "✅ Repacked: $TARBALL"
+          ls -lh "$WORKSPACE/$TARBALL"
 
-      - name:
+      - name: Upload artifact to S3
         id: upload-artifacts
-        uses: qualcomm-linux/video-driver/.github/actions/aws_s3_helper@meta-qcom_full-build
+        uses: qualcomm-linux/video-driver/.github/actions/aws_s3_helper@meta-qcom_full-build-copy
         with:
           s3_bucket: qli-prd-video-gh-artifacts
           local_file: ${{ github.workspace }}/artifacts/file_list.txt
           mode: multi-upload
           upload_location: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.build_matrix.machine }}
-        env:
-          machine: ${{ matrix.build_matrix.machine }}
 
       - name: Clean up
+        if: always()
         shell: bash
         run: |
           rm -rf "${{ github.workspace }}/artifacts"
           rm -rf "${{ github.workspace }}/build"
-          rm -f "${{ github.workspace }}/modules.tar.xz"
+          rm -rf "${{ github.workspace }}/downloads"
+          rm -f  "${{ github.workspace }}/"*_qcomflash_payload.tar.xz
 
       - name: Update summary
         if: success() || failure()
         shell: bash
         run: |
           if [ "${{ job.status }}" == "success" ]; then
-            summary=":heavy_check_mark: Build Success for ${{ matrix.build_matrix.machine }}"
+            icon=":heavy_check_mark:"
           else
-            summary=":x: Build Failed for ${{ matrix.build_matrix.machine }}"
+            icon=":x:"
           fi
-          echo -e "<details><summary><i>Build Summary</i></summary>\n${summary}\n</details>" >> "$GITHUB_STEP_SUMMARY"
+          echo -e "<details><summary><i>Build Summary</i></summary>\n${icon} ${{ matrix.build_matrix.machine }}\n</details>" \
+            >> "$GITHUB_STEP_SUMMARY"
