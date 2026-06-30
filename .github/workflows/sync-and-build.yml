@@ -84,14 +84,16 @@ jobs:
 
           # Search up to depth 2 for a *.qcomflash directory
           QCOMFLASH_DIR="$(
-            find "$DEPLOY_DIR" -maxdepth 2 -type d -name '*.qcomflash' | head -n 1 || true
+            find "$DEPLOY_DIR" -maxdepth 2 -type d -name "*.qcomflash" \
+              | head -n 1 || true
           )"
 
-          # Fallback: use the top-level extracted subdirectory as the payload
+          # Fallback: use the top-level extracted subdirectory
           if [ -z "$QCOMFLASH_DIR" ]; then
-            echo "⚠️  No *.qcomflash dir found, using extracted top-level directory as payload"
+            echo "⚠️  No *.qcomflash dir found, using top-level extracted subdir"
             QCOMFLASH_DIR="$(
-              find "$DEPLOY_DIR" -maxdepth 1 -mindepth 1 -type d | head -n 1 || true
+              find "$DEPLOY_DIR" -maxdepth 1 -mindepth 1 -type d \
+                | sort | head -n 1 || true
             )"
           fi
 
@@ -132,10 +134,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$WORKSPACE/downloads"
-          echo "Downloading video-content files"
+          echo "Downloading the video-content files"
           wget -q \
             "https://github.com/qualcomm-linux/qcom-linux-testkit/releases/download/IRIS-Video-Files-v1.0/video_clips_iris.tar.gz" \
             -O "$WORKSPACE/downloads/video_clips_iris.tar.gz"
+
           [ -f "$WORKSPACE/downloads/video_clips_iris.tar.gz" ] || {
             echo "❌ Failed to download video_clips_iris.tar.gz"
             exit 1
@@ -175,20 +178,16 @@ jobs:
 
           mkdir -p "$WORKSPACE/artifacts"
           : > "$WORKSPACE/artifacts/file_list.txt"
-          : > "$WORKSPACE/artifacts/tar_list.txt"
 
-          find "$resolved_dir" -type f -exec realpath {} \; > "$WORKSPACE/artifacts/tar_list.txt"
+          # Plain tar (no compression) — avoids multi-minute xz compression
+          # of the 6.4 GB rootfs.img. Matches the original S3 meta .tar format.
+          tarball="${MACHINE}_qcomflash_payload.tar"
+          echo "📦 Creating tarball (uncompressed): $tarball"
 
-          if [ ! -s "$WORKSPACE/artifacts/tar_list.txt" ]; then
-            echo "⚠️ No files found to archive."
-            exit 1
-          fi
+          tar -cf "$WORKSPACE/$tarball" \
+            -C "$resolved_dir" .
 
-          tarball="${MACHINE}_qcomflash_payload.tar.xz"
-          tar -cJf "$tarball" -T "$WORKSPACE/artifacts/tar_list.txt"
-          mv "$tarball" "$WORKSPACE"
           echo "$WORKSPACE/$tarball" >> "$WORKSPACE/artifacts/file_list.txt"
-
           echo "✅ Tarball created: $WORKSPACE/$tarball"
           ls -lh "$WORKSPACE/$tarball"
 
@@ -208,10 +207,11 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          rm -rf "$WORKSPACE/artifacts"   || true
-          rm -rf "$WORKSPACE/build"       || true
-          rm -rf "$WORKSPACE/downloads"   || true
-          rm -f  "$WORKSPACE/"*_qcomflash_payload.tar.xz || true
+          rm -rf "$WORKSPACE/artifacts"       || true
+          rm -rf "$WORKSPACE/build"           || true
+          rm -rf "$WORKSPACE/downloads"       || true
+          rm -rf "$WORKSPACE/v4l-video-test-app" || true
+          rm -f  "$WORKSPACE"/*.tar           || true
 
       - name: Update summary
         if: success() || failure()
@@ -221,9 +221,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ job.status }}" == "success" ]; then
-            summary=":heavy_check_mark: Build Success for $MACHINE"
+            summary=":heavy_check_mark: Build Success for ${MACHINE}"
           else
-            summary=":x: Build Failed for $MACHINE"
+            summary=":x: Build Failed for ${MACHINE}"
           fi
-          printf '<details><summary><i>Build Summary</i></summary>\n%s\n</details>\n' \
-            "$summary" >> "$GITHUB_STEP_SUMMARY"
+          echo -e "<details><summary><i>Build Summary</i></summary>\n${summary}\n</details>" \
+            >> "$GITHUB_STEP_SUMMARY"
