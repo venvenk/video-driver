@@ -181,9 +181,9 @@ jobs:
           : > "$WORKSPACE/artifacts/file_list.txt"
 
           # ---------------------------------------------------------------
-          # The S3 .tar files are gzip-compressed despite the .tar extension.
-          # tar -rf only works on plain uncompressed tars — detect and
-          # decompress first, then append only the modified rootfs.img.
+          # Detect compression — S3 .tar files are sometimes gzip-compressed
+          # despite the .tar extension. tar -rf only works on plain tars.
+          # Decompress first if needed, then append only the modified rootfs.img.
           # ---------------------------------------------------------------
           FILETYPE="$(file -b "$ORIGINAL_TAR")"
           echo "📋 Archive type: $FILETYPE"

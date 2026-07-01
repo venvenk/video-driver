@@ -3,7 +3,7 @@ description: >
   Writes synthetic cloudData.json + metadata.json, then renders a LAVA
   job definition using lava_Job_definition_generator.py with
   BOOT_METHOD=flasher and --video_pre-merge tests.
-  Download timeout is patched to 120 min inside Docker to handle ~11 GB artifacts.
+  Patches download timeout to 120min and retries to 3 inside Docker.
 
 inputs:
   docker_image:
@@ -165,7 +165,7 @@ runs:
         EOF
         echo "✅ metadata.json written"
 
-    - name: Render LAVA job definition and patch timeout
+    - name: Render LAVA job definition
       shell: bash
       env:
         DOCKER_IMAGE: ${{ inputs.docker_image }}
@@ -194,57 +194,43 @@ runs:
           bash -c '
             set -euo pipefail
             export BOOT_METHOD=flasher
-
-            # Render the job definition
             python3 lava_Job_definition_generator.py \
               --localjson ./data/cloudData.json \
               --meta-qcom \
               --video_pre-merge
 
-            echo "✅ LAVA job definition rendered"
-
-            # -----------------------------------------------------------
-            # Patch download timeout from 30 min → 120 min.
-            # The file is owned by the container user so we can edit it
-            # here safely — avoids PermissionError outside Docker.
-            # -----------------------------------------------------------
-            YAML="renders/lava_job_definition.yaml"
-            echo "🔧 Patching download timeout from 30 to 120 minutes..."
-
+            echo "🔧 Patching download timeout to 120 min and retries to 3..."
             python3 - << PYEOF
         import yaml, sys
 
-        with open("$YAML", "r") as f:
+        path = "renders/lava_job_definition.yaml"
+        with open(path, "r") as f:
             job = yaml.safe_load(f)
 
-        patched = 0
+        # Patch job-level timeout
+        if "timeouts" not in job:
+            job["timeouts"] = {}
+        job["timeouts"]["job"] = {"minutes": 240}
+
+        # Patch actions: patch download-retry timeout + add retries
         for action in job.get("actions", []):
-            for key, val in action.items():
-                if isinstance(val, dict):
-                    to = val.get("to", "")
-                    if to == "downloads":
-                        timeout = val.get("timeout", {})
-                        old = timeout.get("minutes", "?")
-                        val["timeout"] = {"minutes": 120}
-                        print(f"  Patched deploy.to=downloads timeout: {old} → 120 minutes")
-                        patched += 1
+            if "deploy" in action:
+                deploy = action["deploy"]
+                # Increase deploy timeout
+                deploy["timeout"] = {"minutes": 120}
+                # Add retries to download-retry
+                if "download-retry" not in deploy:
+                    deploy["download-retry"] = {}
+                deploy["download-retry"]["retries"] = 3
+                deploy["download-retry"]["timeout"] = {"minutes": 120}
 
-        if patched == 0:
-            print("⚠️  No downloads deploy action found to patch", file=sys.stderr)
-
-        # Also patch top-level job timeout if < 240 min
-        job_timeout = job.get("timeouts", {}).get("job", {})
-        if job_timeout.get("minutes", 999) < 240:
-            job["timeouts"]["job"] = {"minutes": 240}
-            print("  Patched top-level job timeout → 240 minutes")
-
-        with open("$YAML", "w") as f:
+        with open(path, "w") as f:
             yaml.dump(job, f, default_flow_style=False, allow_unicode=True)
 
-        print(f"✅ Timeout patch applied ({patched} action(s) patched)")
+        print("✅ Patched: timeout=120min retries=3")
         PYEOF
           '
 
-        echo "✅ Render + patch complete"
+        echo "✅ LAVA job definition rendered and patched"
         echo "=== Rendered YAML ==="
         cat "$RENDERS_DIR/lava_job_definition.yaml"
