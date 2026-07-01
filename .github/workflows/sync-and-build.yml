@@ -114,7 +114,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$WORKSPACE/v4l-video-test-app/build"
-          echo "Syncing from s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/iris_test_app/"
+          echo "Syncing files from s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/iris_test_app/"
           aws s3 sync \
             "s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/iris_test_app/" \
             "$WORKSPACE/v4l-video-test-app/build/"
@@ -172,9 +172,6 @@ jobs:
             echo "❌ rootfs.img not found at: $ROOTFS_IMG"
             exit 1
           fi
-
-          echo "=== qcomflash contents ==="
-          ls -larth "$resolved_dir"
 
           ORIGINAL_TAR="$WORKSPACE/downloads/meta/${META_S3_KEY}"
           tarball="${MACHINE}_qcomflash_payload.tar"
@@ -246,9 +243,9 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          rm -rf "$WORKSPACE/artifacts"     || true
-          rm -rf "$WORKSPACE/build"         || true
-          rm -rf "$WORKSPACE/downloads"     || true
+          rm -rf "$WORKSPACE/artifacts"  || true
+          rm -rf "$WORKSPACE/build"      || true
+          rm -rf "$WORKSPACE/downloads"  || true
           rm -f  "$WORKSPACE/"*_qcomflash_payload.tar || true
 
       - name: Update summary

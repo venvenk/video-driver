@@ -1,8 +1,7 @@
 name: LAVA Job Render
 description: >
   Writes synthetic cloudData.json + metadata.json, renders a LAVA job
-  definition using lava_Job_definition_generator.py with
-  BOOT_METHOD=flasher and --video_pre-merge tests.
+  definition with BOOT_METHOD=flasher and --video_pre-merge tests.
 
 inputs:
   docker_image:
@@ -87,80 +86,121 @@ runs:
         echo "job_render_dir=$JOB_RENDER_DIR" >> "$GITHUB_OUTPUT"
 
         echo "📝 Writing cloudData.json (machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME)"
-        cat > "$DATA_DIR/cloudData.json" << EOF
-        {
-          "id": "ci-${MACHINE}",
-          "kind": "kbuild",
-          "name": "ci-build-${MACHINE}",
-          "path": ["checkout", "ci-build-${MACHINE}"],
-          "group": "ci-build-${MACHINE}",
-          "parent": "",
-          "state": "done",
-          "result": "pass",
-          "artifacts": {
-            "metadata":    "",
-            "kernel":      "",
-            "vmlinux":     "",
-            "modules":     "",
-            "ramdisk":     "",
-            "firmware":    "",
-            "dtb":         "",
-            "flash_image": "${ARTIFACT_URL}"
-          },
-          "data": {
-            "kernel_revision": {
-              "tree": "qcom-next",
-              "url": "",
-              "branch": "main",
-              "commit": "",
-              "describe": "",
-              "version": {
-                "version": 0, "patchlevel": 0, "sublevel": null,
-                "extra": "", "name": null
-              },
-              "patchset": null,
-              "commit_tags": [],
-              "commit_message": "",
-              "tip_of_branch": true
-            },
-            "arch":        "arm64",
-            "defconfig":   "defconfig",
-            "compiler":    "gcc-12",
-            "error_code":  null,
-            "error_msg":   null,
-            "fragments":   [],
-            "config_full": "defconfig",
-            "platform":    "${LAVA_NAME}",
-            "runtime":     "lava",
-            "job_id":      "ci-${MACHINE}",
-            "job_context": "github-actions",
-            "kernel_type": "image",
-            "regression":  null
-          },
-          "debug": {},
-          "jobfilter": null,
-          "platform_filter": [],
-          "owner": "production",
-          "submitter": "service:pipeline"
-        }
-        EOF
+
+        # EOF must be at column 0 — no leading spaces
+        cat > "$DATA_DIR/cloudData.json" <<EOF
+{
+  "id": "ci-${MACHINE}",
+  "kind": "kbuild",
+  "name": "ci-build-${MACHINE}",
+  "path": ["checkout", "ci-build-${MACHINE}"],
+  "group": "ci-build-${MACHINE}",
+  "parent": "",
+  "state": "done",
+  "result": "pass",
+  "artifacts": {
+    "metadata":    "",
+    "kernel":      "",
+    "vmlinux":     "",
+    "modules":     "",
+    "ramdisk":     "",
+    "firmware":    "",
+    "dtb":         "",
+    "flash_image": "${ARTIFACT_URL}"
+  },
+  "data": {
+    "kernel_revision": {
+      "tree": "qcom-next",
+      "url": "",
+      "branch": "main",
+      "commit": "",
+      "describe": "",
+      "version": {
+        "version": 0, "patchlevel": 0, "sublevel": null,
+        "extra": "", "name": null
+      },
+      "patchset": null,
+      "commit_tags": [],
+      "commit_message": "",
+      "tip_of_branch": true
+    },
+    "arch":        "arm64",
+    "defconfig":   "defconfig",
+    "compiler":    "gcc-12",
+    "error_code":  null,
+    "error_msg":   null,
+    "fragments":   [],
+    "config_full": "defconfig",
+    "platform":    "${LAVA_NAME}",
+    "runtime":     "lava",
+    "job_id":      "ci-${MACHINE}",
+    "job_context": "github-actions",
+    "kernel_type": "image",
+    "regression":  null
+  },
+  "debug": {},
+  "jobfilter": null,
+  "platform_filter": [],
+  "owner": "production",
+  "submitter": "service:pipeline"
+}
+EOF
         echo "✅ cloudData.json written"
 
         echo "📝 Writing metadata.json (DTB key: dtbs/qcom/${DTB_NAME}.dtb)"
-        cat > "$DATA_DIR/metadata.json" << EOF
-        {
-          "build": {
-            "arch": "arm64",
-            "compiler": "gcc-12",
-            "defconfig": "defconfig",
-            "fragments": [],
-            "config_full": "defconfig",
-            "result": "pass"
-          },
-          "artifacts": {
-            "dtbs/qcom/${DTB_NAME}.dtb": ""
-          }
-        }
-        EOF
-        echo "✅ metadata.json w
-        
+
+        cat > "$DATA_DIR/metadata.json" <<EOF
+{
+  "build": {
+    "arch": "arm64",
+    "compiler": "gcc-12",
+    "defconfig": "defconfig",
+    "fragments": [],
+    "config_full": "defconfig",
+    "result": "pass"
+  },
+  "artifacts": {
+    "dtbs/qcom/${DTB_NAME}.dtb": ""
+  }
+}
+EOF
+        echo "✅ metadata.json written"
+
+    - name: Render LAVA job definition
+      shell: bash
+      env:
+        DOCKER_IMAGE: ${{ inputs.docker_image }}
+        MACHINE:      ${{ inputs.machine }}
+        LAVA_NAME:    ${{ inputs.lavaname }}
+        TARGET_DTB:   ${{ steps.write_json.outputs.dtb_name }}
+        WORKSPACE:    ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+
+        JOB_RENDER_DIR="$(dirname "$WORKSPACE")/job_render"
+        RENDERS_DIR="$JOB_RENDER_DIR/renders"
+        mkdir -p "$RENDERS_DIR"
+
+        echo "🔧 Rendering LAVA job: machine=$MACHINE lavaname=$LAVA_NAME dtb=$TARGET_DTB"
+
+        docker run -i --rm \
+          --workdir="$JOB_RENDER_DIR" \
+          -v "$(dirname "$JOB_RENDER_DIR"):$(dirname "$JOB_RENDER_DIR")" \
+          -e MACHINE="$MACHINE" \
+          -e TARGET="$MACHINE" \
+          -e LAVA_NAME="$LAVA_NAME" \
+          -e TARGET_DTB="$TARGET_DTB" \
+          -e BOOT_METHOD="flasher" \
+          "$DOCKER_IMAGE" \
+          bash -c '
+            set -euo pipefail
+            export BOOT_METHOD=flasher
+            python3 lava_Job_definition_generator.py \
+              --localjson ./data/cloudData.json \
+              --meta-qcom \
+              --video_pre-merge
+          '
+
+        echo "✅ LAVA job definition rendered"
+        echo "=== Rendered YAML ==="
+        cat "$RENDERS_DIR/lava_job_definition.yaml"
