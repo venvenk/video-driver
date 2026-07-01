@@ -68,12 +68,13 @@ jobs:
           echo "=== presigned_urls.json keys ==="
           jq -r 'keys[]' "$PRESIGNED"
 
+      
       - name: Clone LAVA job render scripts
         shell: bash
         run: |
           set -euo pipefail
           cd ..
-          git clone --depth 1 https://github.com/qualcomm-linux/job_render
+          git clone --depth 1 https://github.com/Manigurr/job_render
 
       - name: Render LAVA job definition
         id: render

@@ -1,9 +1,8 @@
 name: LAVA Job Render
 description: >
-  Writes synthetic cloudData.json + metadata.json, then renders a LAVA
-  job definition using lava_Job_definition_generator.py with
+  Writes synthetic cloudData.json + metadata.json, renders a LAVA job
+  definition using lava_Job_definition_generator.py with
   BOOT_METHOD=flasher and --video_pre-merge tests.
-  Patches download timeout to 120min and retries to 3 inside Docker.
 
 inputs:
   docker_image:
@@ -163,74 +162,5 @@ runs:
           }
         }
         EOF
-        echo "✅ metadata.json written"
-
-    - name: Render LAVA job definition
-      shell: bash
-      env:
-        DOCKER_IMAGE: ${{ inputs.docker_image }}
-        MACHINE:      ${{ inputs.machine }}
-        LAVA_NAME:    ${{ inputs.lavaname }}
-        TARGET_DTB:   ${{ steps.write_json.outputs.dtb_name }}
-        WORKSPACE:    ${{ github.workspace }}
-      run: |
-        set -euo pipefail
-
-        JOB_RENDER_DIR="${{ steps.write_json.outputs.job_render_dir }}"
-        RENDERS_DIR="$JOB_RENDER_DIR/renders"
-        mkdir -p "$RENDERS_DIR"
-
-        echo "🔧 Rendering LAVA job: machine=$MACHINE lavaname=$LAVA_NAME dtb=$TARGET_DTB"
-
-        docker run -i --rm \
-          --workdir="$JOB_RENDER_DIR" \
-          -v "$(dirname "$JOB_RENDER_DIR"):$(dirname "$JOB_RENDER_DIR")" \
-          -e MACHINE="$MACHINE" \
-          -e TARGET="$MACHINE" \
-          -e LAVA_NAME="$LAVA_NAME" \
-          -e TARGET_DTB="$TARGET_DTB" \
-          -e BOOT_METHOD="flasher" \
-          "$DOCKER_IMAGE" \
-          bash -c '
-            set -euo pipefail
-            export BOOT_METHOD=flasher
-            python3 lava_Job_definition_generator.py \
-              --localjson ./data/cloudData.json \
-              --meta-qcom \
-              --video_pre-merge
-
-            echo "🔧 Patching download timeout to 120 min and retries to 3..."
-            python3 - << PYEOF
-        import yaml, sys
-
-        path = "renders/lava_job_definition.yaml"
-        with open(path, "r") as f:
-            job = yaml.safe_load(f)
-
-        # Patch job-level timeout
-        if "timeouts" not in job:
-            job["timeouts"] = {}
-        job["timeouts"]["job"] = {"minutes": 240}
-
-        # Patch actions: patch download-retry timeout + add retries
-        for action in job.get("actions", []):
-            if "deploy" in action:
-                deploy = action["deploy"]
-                # Increase deploy timeout
-                deploy["timeout"] = {"minutes": 120}
-                # Add retries to download-retry
-                if "download-retry" not in deploy:
-                    deploy["download-retry"] = {}
-                deploy["download-retry"]["retries"] = 3
-                deploy["download-retry"]["timeout"] = {"minutes": 120}
-
-        with open(path, "w") as f:
-            yaml.dump(job, f, default_flow_style=False, allow_unicode=True)
-
-        print("✅ Patched: timeout=120min retries=3")
-        PYEOF
-          '
-
-        echo "✅ LAVA job definition rendered and patched"
-        echo "=== Rendered YAML ==="
-        cat "$RENDERS_DIR/lava_job_definition.yaml"
+        echo "✅ metadata.json w
+        
