@@ -149,6 +149,7 @@ jobs:
         env:
           WORKSPACE:   ${{ github.workspace }}
           MACHINE:     ${{ matrix.build_matrix.machine }}
+          META_S3_KEY: ${{ matrix.build_matrix.meta_s3_key }}
         run: |
           set -euo pipefail
 
@@ -176,10 +177,10 @@ jobs:
           : > "$WORKSPACE/artifacts/file_list.txt"
 
           # ---------------------------------------------------------------
-          # Split into TWO artifacts to avoid LAVA dispatcher disk exhaustion:
-          # 1. {machine}_flash_files.tar — all files EXCEPT rootfs.img (~600MB)
-          # 2. {machine}_rootfs.img      — injected rootfs (~6.4GB)
-          # LAVA downloads and flashes them separately.
+          # Split into TWO artifacts:
+          # 1. {machine}_flash_files.tar — everything EXCEPT rootfs.img (~600 MB)
+          # 2. {machine}_rootfs.img      — injected rootfs (~6.4 GB)
+          # LAVA downloads them sequentially so disk is never exhausted.
           # ---------------------------------------------------------------
 
           FLASH_TAR="$WORKSPACE/${MACHINE}_flash_files.tar"
