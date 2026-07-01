@@ -1,8 +1,8 @@
 name: LAVA Job Render
 description: >
-  Writes synthetic cloudData.json + metadata.json, renders a LAVA job
-  definition with BOOT_METHOD=flasher and --video_pre-merge tests,
-  then patches job timeout to 240 min and download retries to 3.
+  Resolves flash_files + rootfs presigned URLs, writes cloudData.json +
+  metadata.json, renders a LAVA job definition with BOOT_METHOD=flasher
+  and --video_pre-merge tests.
 
 inputs:
   docker_image:
@@ -22,16 +22,17 @@ runs:
   using: "composite"
   steps:
 
-    - name: Extract presigned URL for this machine
-      id: get_url
+    - name: Extract presigned URLs for this machine
+      id: get_urls
       shell: bash
       env:
-        MACHINE: ${{ inputs.machine }}
+        MACHINE:        ${{ inputs.machine }}
         PRESIGNED_FILE: ${{ inputs.presigned_urls_file }}
       run: |
         set -euo pipefail
 
-        tarball_key="${MACHINE}_qcomflash_payload.tar"
+        flash_key="${MACHINE}_flash_files.tar"
+        rootfs_key="${MACHINE}_rootfs.img"
 
         if [ ! -f "$PRESIGNED_FILE" ]; then
           echo "❌ presigned_urls.json not found at: $PRESIGNED_FILE"
@@ -41,24 +42,33 @@ runs:
         echo "=== presigned_urls.json keys ==="
         jq -r 'keys[]' "$PRESIGNED_FILE"
 
-        url="$(jq -r --arg key "$tarball_key" '.[$key] // empty' "$PRESIGNED_FILE")"
+        flash_url="$(jq -r --arg key "$flash_key" '.[$key] // empty' "$PRESIGNED_FILE")"
+        rootfs_url="$(jq -r --arg key "$rootfs_key" '.[$key] // empty' "$PRESIGNED_FILE")"
 
-        if [ -z "$url" ]; then
-          echo "❌ No presigned URL found for key: $tarball_key"
+        if [ -z "$flash_url" ]; then
+          echo "❌ No presigned URL found for key: $flash_key"
           exit 1
         fi
 
-        echo "✅ Resolved presigned URL for: $tarball_key"
-        echo "artifact_url=$url" >> "$GITHUB_OUTPUT"
+        if [ -z "$rootfs_url" ]; then
+          echo "❌ No presigned URL found for key: $rootfs_key"
+          exit 1
+        fi
+
+        echo "✅ Resolved flash_url for: $flash_key"
+        echo "✅ Resolved rootfs_url for: $rootfs_key"
+        echo "flash_url=$flash_url"   >> "$GITHUB_OUTPUT"
+        echo "rootfs_url=$rootfs_url" >> "$GITHUB_OUTPUT"
 
     - name: Write synthetic cloudData.json and metadata.json
       id: write_json
       shell: bash
       env:
-        MACHINE:      ${{ inputs.machine }}
-        LAVA_NAME:    ${{ inputs.lavaname }}
-        ARTIFACT_URL: ${{ steps.get_url.outputs.artifact_url }}
-        WORKSPACE:    ${{ github.workspace }}
+        MACHINE:    ${{ inputs.machine }}
+        LAVA_NAME:  ${{ inputs.lavaname }}
+        FLASH_URL:  ${{ steps.get_urls.outputs.flash_url }}
+        ROOTFS_URL: ${{ steps.get_urls.outputs.rootfs_url }}
+        WORKSPACE:  ${{ github.workspace }}
       run: |
         set -euo pipefail
 
@@ -86,11 +96,13 @@ runs:
         echo "dtb_name=$DTB_NAME"             >> "$GITHUB_OUTPUT"
         echo "job_render_dir=$JOB_RENDER_DIR" >> "$GITHUB_OUTPUT"
 
-        echo "📝 Writing cloudData.json via jq"
+        echo "📝 Writing cloudData.json (machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME)"
+
         jq -n \
-          --arg machine  "$MACHINE" \
-          --arg lavaname "$LAVA_NAME" \
-          --arg url      "$ARTIFACT_URL" \
+          --arg machine   "$MACHINE" \
+          --arg lavaname  "$LAVA_NAME" \
+          --arg flash_url "$FLASH_URL" \
+          --arg rootfs_url "$ROOTFS_URL" \
           '{
             "id":     ("ci-" + $machine),
             "kind":   "kbuild",
@@ -101,30 +113,31 @@ runs:
             "state":  "done",
             "result": "pass",
             "artifacts": {
-              "metadata":   "",
-              "kernel":     "",
-              "vmlinux":    "",
-              "modules":    "",
-              "ramdisk":    "",
-              "firmware":   "",
-              "dtb":        "",
-              "flash_image": $url
+              "metadata":      "",
+              "kernel":        "",
+              "vmlinux":       "",
+              "modules":       "",
+              "ramdisk":       "",
+              "firmware":      "",
+              "dtb":           "",
+              "flash_image":   $flash_url,
+              "rootfs_image":  $rootfs_url
             },
             "data": {
               "kernel_revision": {
-                "tree": "qcom-next",
-                "url":  "",
-                "branch": "main",
-                "commit": "",
+                "tree":    "qcom-next",
+                "url":     "",
+                "branch":  "main",
+                "commit":  "",
                 "describe": "",
                 "version": {
                   "version": 0, "patchlevel": 0, "sublevel": null,
                   "extra": "", "name": null
                 },
-                "patchset": null,
-                "commit_tags": [],
+                "patchset":       null,
+                "commit_tags":    [],
                 "commit_message": "",
-                "tip_of_branch": true
+                "tip_of_branch":  true
               },
               "arch":        "arm64",
               "defconfig":   "defconfig",
@@ -148,8 +161,9 @@ runs:
           }' > "$DATA_DIR/cloudData.json"
 
         echo "✅ cloudData.json written"
+        cat "$DATA_DIR/cloudData.json"
 
-        echo "📝 Writing metadata.json (DTB: dtbs/qcom/${DTB_NAME}.dtb)"
+        echo "📝 Writing metadata.json (DTB key: dtbs/qcom/${DTB_NAME}.dtb)"
         jq -n \
           --arg dtb "dtbs/qcom/${DTB_NAME}.dtb" \
           '{
@@ -167,14 +181,15 @@ runs:
           }' > "$DATA_DIR/metadata.json"
 
         echo "✅ metadata.json written"
+        cat "$DATA_DIR/metadata.json"
 
-    - name: Render LAVA job definition and patch timeouts
+    - name: Render LAVA job definition
       shell: bash
       env:
         DOCKER_IMAGE: ${{ inputs.docker_image }}
         MACHINE:      ${{ inputs.machine }}
         LAVA_NAME:    ${{ inputs.lavaname }}
-        DTB_NAME:     ${{ steps.write_json.outputs.dtb_name }}
+        TARGET_DTB:   ${{ steps.write_json.outputs.dtb_name }}
         WORKSPACE:    ${{ github.workspace }}
       run: |
         set -euo pipefail
@@ -183,35 +198,9 @@ runs:
         RENDERS_DIR="$JOB_RENDER_DIR/renders"
         mkdir -p "$RENDERS_DIR"
 
-        echo "🔧 Rendering LAVA job: machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME"
-
-        # Write the patch script to a file — avoids YAML special char issues
-        PATCH_SCRIPT="$JOB_RENDER_DIR/patch_yaml.py"
-        cat > "$PATCH_SCRIPT" << 'PYEOF'
-        import sys, yaml
-
-        path = sys.argv[1]
-        with open(path, 'r') as f:
-            job = yaml.safe_load(f)
-
-        # Fix job-level timeout — must be >= largest action timeout
-        if 'timeouts' not in job:
-            job['timeouts'] = {}
-        job['timeouts']['job'] = {'minutes': 240}
-
-        # Fix download action timeout and add retries
-        for action in job.get('actions', []):
-            if 'deploy' in action:
-                dep = action['deploy']
-                if dep.get('to') == 'downloads':
-                    dep['timeout'] = {'minutes': 120}
-                    dep['retries'] = 3
-
-        with open(path, 'w') as f:
-            yaml.dump(job, f, default_flow_style=False, allow_unicode=True)
-
-        print("✅ Patched: job timeout=240min, download timeout=120min, retries=3")
-        PYEOF
+        echo "🔧 Rendering LAVA job: machine=$MACHINE lavaname=$LAVA_NAME dtb=$TARGET_DTB"
+        echo "=== flasher.jinja2 timeout ==="
+        grep -A2 "timeout:" "$JOB_RENDER_DIR/templates/boot/flasher.jinja2" || true
 
         docker run -i --rm \
           --workdir="$JOB_RENDER_DIR" \
@@ -219,21 +208,18 @@ runs:
           -e MACHINE="$MACHINE" \
           -e TARGET="$MACHINE" \
           -e LAVA_NAME="$LAVA_NAME" \
-          -e TARGET_DTB="$DTB_NAME" \
+          -e TARGET_DTB="$TARGET_DTB" \
           -e BOOT_METHOD="flasher" \
           "$DOCKER_IMAGE" \
           bash -c '
             set -euo pipefail
-
-            echo "🔧 Running generator..."
+            export BOOT_METHOD=flasher
             python3 lava_Job_definition_generator.py \
               --localjson ./data/cloudData.json \
               --meta-qcom \
               --video_pre-merge
-
-            echo "🔧 Patching timeouts..."
-            python3 patch_yaml.py ./renders/lava_job_definition.yaml
-
-            echo "✅ Final YAML:"
-            cat ./renders/lava_job_definition.yaml
           '
+
+        echo "✅ LAVA job definition rendered"
+        echo "=== Rendered YAML ==="
+        cat "$RENDERS_DIR/lava_job_definition.yaml"

@@ -44,8 +44,6 @@ jobs:
             "artifacts.codelinaro.org/clo-420-qli-registry/${{ inputs.docker_image }}" \
             "${{ inputs.docker_image }}" || true
 
-      # Name must exactly match the upload name in sync-and-build.yml:
-      # presigned-urls-{machine}  (hyphen separator, not underscore)
       - name: Download machine-scoped presigned URLs
         uses: actions/download-artifact@v4
         with:
@@ -68,13 +66,16 @@ jobs:
           echo "=== presigned_urls.json keys ==="
           jq -r 'keys[]' "$PRESIGNED"
 
-      
       - name: Clone LAVA job render scripts
         shell: bash
         run: |
           set -euo pipefail
           cd ..
+          rm -rf job_render
           git clone --depth 1 https://github.com/Manigurr/job_render
+          echo "✅ Cloned Manigurr/job_render"
+          echo "=== flasher.jinja2 timeout check ==="
+          grep -A2 "timeout:" ../job_render/templates/boot/flasher.jinja2 || true
 
       - name: Render LAVA job definition
         id: render

@@ -149,7 +149,6 @@ jobs:
         env:
           WORKSPACE:   ${{ github.workspace }}
           MACHINE:     ${{ matrix.build_matrix.machine }}
-          META_S3_KEY: ${{ matrix.build_matrix.meta_s3_key }}
         run: |
           set -euo pipefail
 
@@ -173,51 +172,35 @@ jobs:
             exit 1
           fi
 
-          ORIGINAL_TAR="$WORKSPACE/downloads/meta/${META_S3_KEY}"
-          tarball="${MACHINE}_qcomflash_payload.tar"
-          OUTPUT_TAR="$WORKSPACE/$tarball"
-
           mkdir -p "$WORKSPACE/artifacts"
           : > "$WORKSPACE/artifacts/file_list.txt"
 
           # ---------------------------------------------------------------
-          # Detect compression — S3 .tar files are sometimes gzip-compressed
-          # despite the .tar extension. tar -rf only works on plain tars.
-          # Decompress first then append only the modified rootfs.img.
+          # Split into TWO artifacts to avoid LAVA dispatcher disk exhaustion:
+          # 1. {machine}_flash_files.tar — all files EXCEPT rootfs.img (~600MB)
+          # 2. {machine}_rootfs.img      — injected rootfs (~6.4GB)
+          # LAVA downloads and flashes them separately.
           # ---------------------------------------------------------------
-          FILETYPE="$(file -b "$ORIGINAL_TAR")"
-          echo "📋 Archive type: $FILETYPE"
 
-          if echo "$FILETYPE" | grep -qi "gzip"; then
-            echo "🗜️  gzip — streaming decompress to plain tar..."
-            zcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
-          elif echo "$FILETYPE" | grep -qi "bzip2"; then
-            echo "🗜️  bzip2 — streaming decompress to plain tar..."
-            bzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
-          elif echo "$FILETYPE" | grep -qi "\bXZ\b\|xz compressed"; then
-            echo "🗜️  xz — streaming decompress to plain tar..."
-            xzcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
-          elif echo "$FILETYPE" | grep -qi "Zstandard"; then
-            echo "🗜️  zstd — streaming decompress to plain tar..."
-            zstdcat "$ORIGINAL_TAR" > "$OUTPUT_TAR"
-          else
-            echo "📋 Plain tar — copying directly..."
-            cp "$ORIGINAL_TAR" "$OUTPUT_TAR"
-          fi
+          FLASH_TAR="$WORKSPACE/${MACHINE}_flash_files.tar"
+          ROOTFS_DEST="$WORKSPACE/${MACHINE}_rootfs.img"
 
-          echo "✅ Base tar ready: $(ls -lh "$OUTPUT_TAR" | awk '{print $5}')"
-
-          echo "📦 Appending updated rootfs.img..."
-          tar -rf "$OUTPUT_TAR" \
+          echo "📦 Creating flash_files.tar (excluding rootfs.img)..."
+          tar -cf "$FLASH_TAR" \
             -C "$resolved_dir" \
-            --transform 's|^|./|' \
-            rootfs.img
+            --exclude='./rootfs.img' \
+            .
+          echo "✅ flash_files.tar: $(ls -lh "$FLASH_TAR" | awk '{print $5}')"
 
-          echo "✅ rootfs.img appended"
-          ls -lh "$OUTPUT_TAR"
+          echo "📦 Copying injected rootfs.img..."
+          cp "$ROOTFS_IMG" "$ROOTFS_DEST"
+          echo "✅ rootfs.img: $(ls -lh "$ROOTFS_DEST" | awk '{print $5}')"
 
-          echo "$OUTPUT_TAR" >> "$WORKSPACE/artifacts/file_list.txt"
-          echo "✅ Queued for upload: $OUTPUT_TAR"
+          echo "$FLASH_TAR"   >> "$WORKSPACE/artifacts/file_list.txt"
+          echo "$ROOTFS_DEST" >> "$WORKSPACE/artifacts/file_list.txt"
+
+          echo "=== Queued for upload ==="
+          cat "$WORKSPACE/artifacts/file_list.txt"
 
       - name: Upload artifacts to S3
         id: upload-artifacts
@@ -229,7 +212,6 @@ jobs:
           upload_location: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.build_matrix.machine }}
 
       - name: Upload machine-specific presigned URLs artifact
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: presigned-urls-${{ matrix.build_matrix.machine }}
@@ -246,7 +228,8 @@ jobs:
           rm -rf "$WORKSPACE/artifacts"    || true
           rm -rf "$WORKSPACE/build"        || true
           rm -rf "$WORKSPACE/downloads"    || true
-          rm -f  "$WORKSPACE/"*_qcomflash_payload.tar || true
+          rm -f  "$WORKSPACE/"*_flash_files.tar || true
+          rm -f  "$WORKSPACE/"*_rootfs.img || true
 
       - name: Update summary
         if: success() || failure()
