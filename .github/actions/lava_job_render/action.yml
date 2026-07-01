@@ -2,8 +2,7 @@ name: LAVA Job Render
 description: >
   Writes synthetic cloudData.json + metadata.json, renders a LAVA job
   definition with BOOT_METHOD=flasher and --video_pre-merge tests,
-  then patches job timeout to 240 min and download timeout to 120 min
-  with 3 retries inside Docker.
+  then patches job timeout to 240 min and download retries to 3.
 
 inputs:
   docker_image:
@@ -87,12 +86,11 @@ runs:
         echo "dtb_name=$DTB_NAME"             >> "$GITHUB_OUTPUT"
         echo "job_render_dir=$JOB_RENDER_DIR" >> "$GITHUB_OUTPUT"
 
-        echo "📝 Writing cloudData.json via jq (machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME)"
-
+        echo "📝 Writing cloudData.json via jq"
         jq -n \
-          --arg machine   "$MACHINE" \
-          --arg lavaname  "$LAVA_NAME" \
-          --arg url       "$ARTIFACT_URL" \
+          --arg machine  "$MACHINE" \
+          --arg lavaname "$LAVA_NAME" \
+          --arg url      "$ARTIFACT_URL" \
           '{
             "id":     ("ci-" + $machine),
             "kind":   "kbuild",
@@ -114,19 +112,19 @@ runs:
             },
             "data": {
               "kernel_revision": {
-                "tree":    "qcom-next",
-                "url":     "",
-                "branch":  "main",
-                "commit":  "",
+                "tree": "qcom-next",
+                "url":  "",
+                "branch": "main",
+                "commit": "",
                 "describe": "",
                 "version": {
                   "version": 0, "patchlevel": 0, "sublevel": null,
                   "extra": "", "name": null
                 },
-                "patchset":       null,
-                "commit_tags":    [],
+                "patchset": null,
+                "commit_tags": [],
                 "commit_message": "",
-                "tip_of_branch":  true
+                "tip_of_branch": true
               },
               "arch":        "arm64",
               "defconfig":   "defconfig",
@@ -143,27 +141,25 @@ runs:
               "regression":  null
             },
             "debug": {},
-            "jobfilter":      null,
+            "jobfilter": null,
             "platform_filter": [],
-            "owner":     "production",
+            "owner": "production",
             "submitter": "service:pipeline"
           }' > "$DATA_DIR/cloudData.json"
 
         echo "✅ cloudData.json written"
-        cat "$DATA_DIR/cloudData.json"
 
-        echo "📝 Writing metadata.json (DTB key: dtbs/qcom/${DTB_NAME}.dtb)"
-
+        echo "📝 Writing metadata.json (DTB: dtbs/qcom/${DTB_NAME}.dtb)"
         jq -n \
           --arg dtb "dtbs/qcom/${DTB_NAME}.dtb" \
           '{
             "build": {
-              "arch":        "arm64",
-              "compiler":    "gcc-12",
-              "defconfig":   "defconfig",
-              "fragments":   [],
+              "arch": "arm64",
+              "compiler": "gcc-12",
+              "defconfig": "defconfig",
+              "fragments": [],
               "config_full": "defconfig",
-              "result":      "pass"
+              "result": "pass"
             },
             "artifacts": {
               ($dtb): ""
@@ -171,15 +167,14 @@ runs:
           }' > "$DATA_DIR/metadata.json"
 
         echo "✅ metadata.json written"
-        cat "$DATA_DIR/metadata.json"
 
-    - name: Render LAVA job definition and patch timeouts inside Docker
+    - name: Render LAVA job definition and patch timeouts
       shell: bash
       env:
         DOCKER_IMAGE: ${{ inputs.docker_image }}
         MACHINE:      ${{ inputs.machine }}
         LAVA_NAME:    ${{ inputs.lavaname }}
-        TARGET_DTB:   ${{ steps.write_json.outputs.dtb_name }}
+        DTB_NAME:     ${{ steps.write_json.outputs.dtb_name }}
         WORKSPACE:    ${{ github.workspace }}
       run: |
         set -euo pipefail
@@ -188,7 +183,35 @@ runs:
         RENDERS_DIR="$JOB_RENDER_DIR/renders"
         mkdir -p "$RENDERS_DIR"
 
-        echo "🔧 Rendering LAVA job: machine=$MACHINE lavaname=$LAVA_NAME dtb=$TARGET_DTB"
+        echo "🔧 Rendering LAVA job: machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME"
+
+        # Write the patch script to a file — avoids YAML special char issues
+        PATCH_SCRIPT="$JOB_RENDER_DIR/patch_yaml.py"
+        cat > "$PATCH_SCRIPT" << 'PYEOF'
+        import sys, yaml
+
+        path = sys.argv[1]
+        with open(path, 'r') as f:
+            job = yaml.safe_load(f)
+
+        # Fix job-level timeout — must be >= largest action timeout
+        if 'timeouts' not in job:
+            job['timeouts'] = {}
+        job['timeouts']['job'] = {'minutes': 240}
+
+        # Fix download action timeout and add retries
+        for action in job.get('actions', []):
+            if 'deploy' in action:
+                dep = action['deploy']
+                if dep.get('to') == 'downloads':
+                    dep['timeout'] = {'minutes': 120}
+                    dep['retries'] = 3
+
+        with open(path, 'w') as f:
+            yaml.dump(job, f, default_flow_style=False, allow_unicode=True)
+
+        print("✅ Patched: job timeout=240min, download timeout=120min, retries=3")
+        PYEOF
 
         docker run -i --rm \
           --workdir="$JOB_RENDER_DIR" \
@@ -196,48 +219,21 @@ runs:
           -e MACHINE="$MACHINE" \
           -e TARGET="$MACHINE" \
           -e LAVA_NAME="$LAVA_NAME" \
-          -e TARGET_DTB="$TARGET_DTB" \
+          -e TARGET_DTB="$DTB_NAME" \
           -e BOOT_METHOD="flasher" \
           "$DOCKER_IMAGE" \
           bash -c '
             set -euo pipefail
 
-            export BOOT_METHOD=flasher
+            echo "🔧 Running generator..."
             python3 lava_Job_definition_generator.py \
               --localjson ./data/cloudData.json \
               --meta-qcom \
               --video_pre-merge
 
-            echo "✅ Render complete — patching timeouts..."
+            echo "🔧 Patching timeouts..."
+            python3 patch_yaml.py ./renders/lava_job_definition.yaml
 
-            YAML="./renders/lava_job_definition.yaml"
-
-            # Patch job-level timeout to 240 min so it exceeds all action timeouts
-            python3 - <<EOF
-import yaml, sys
-
-with open("$YAML", "r") as f:
-    job = yaml.safe_load(f)
-
-# 1. Job-level timeout — must be > all action timeouts
-job.setdefault("timeouts", {})
-job["timeouts"]["job"] = {"minutes": 240}
-
-# 2. Download action timeout + retries inside the actions list
-for action in job.get("actions", []):
-    if "deploy" in action:
-        deploy = action["deploy"]
-        if deploy.get("to") == "downloads":
-            deploy["timeout"] = {"minutes": 120}
-            deploy["retries"]  = 3
-
-with open("$YAML", "w") as f:
-    yaml.dump(job, f, default_flow_style=False, allow_unicode=True)
-
-print("✅ Timeouts patched: job=240min, download=120min, retries=3")
-EOF
+            echo "✅ Final YAML:"
+            cat ./renders/lava_job_definition.yaml
           '
-
-        echo "✅ LAVA job definition rendered and patched"
-        echo "=== Rendered YAML ==="
-        cat "$RENDERS_DIR/lava_job_definition.yaml"
