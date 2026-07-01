@@ -85,86 +85,95 @@ runs:
         echo "dtb_name=$DTB_NAME"             >> "$GITHUB_OUTPUT"
         echo "job_render_dir=$JOB_RENDER_DIR" >> "$GITHUB_OUTPUT"
 
-        echo "📝 Writing cloudData.json (machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME)"
+        echo "📝 Writing cloudData.json via jq (machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME)"
 
-        # EOF must be at column 0 — no leading spaces
-        cat > "$DATA_DIR/cloudData.json" <<EOF
-{
-  "id": "ci-${MACHINE}",
-  "kind": "kbuild",
-  "name": "ci-build-${MACHINE}",
-  "path": ["checkout", "ci-build-${MACHINE}"],
-  "group": "ci-build-${MACHINE}",
-  "parent": "",
-  "state": "done",
-  "result": "pass",
-  "artifacts": {
-    "metadata":    "",
-    "kernel":      "",
-    "vmlinux":     "",
-    "modules":     "",
-    "ramdisk":     "",
-    "firmware":    "",
-    "dtb":         "",
-    "flash_image": "${ARTIFACT_URL}"
-  },
-  "data": {
-    "kernel_revision": {
-      "tree": "qcom-next",
-      "url": "",
-      "branch": "main",
-      "commit": "",
-      "describe": "",
-      "version": {
-        "version": 0, "patchlevel": 0, "sublevel": null,
-        "extra": "", "name": null
-      },
-      "patchset": null,
-      "commit_tags": [],
-      "commit_message": "",
-      "tip_of_branch": true
-    },
-    "arch":        "arm64",
-    "defconfig":   "defconfig",
-    "compiler":    "gcc-12",
-    "error_code":  null,
-    "error_msg":   null,
-    "fragments":   [],
-    "config_full": "defconfig",
-    "platform":    "${LAVA_NAME}",
-    "runtime":     "lava",
-    "job_id":      "ci-${MACHINE}",
-    "job_context": "github-actions",
-    "kernel_type": "image",
-    "regression":  null
-  },
-  "debug": {},
-  "jobfilter": null,
-  "platform_filter": [],
-  "owner": "production",
-  "submitter": "service:pipeline"
-}
-EOF
+        # Use jq to safely construct JSON — avoids heredoc YAML parse issues
+        jq -n \
+          --arg machine  "$MACHINE" \
+          --arg lavaname "$LAVA_NAME" \
+          --arg url      "$ARTIFACT_URL" \
+          '{
+            "id":     ("ci-" + $machine),
+            "kind":   "kbuild",
+            "name":   ("ci-build-" + $machine),
+            "path":   ["checkout", ("ci-build-" + $machine)],
+            "group":  ("ci-build-" + $machine),
+            "parent": "",
+            "state":  "done",
+            "result": "pass",
+            "artifacts": {
+              "metadata":   "",
+              "kernel":     "",
+              "vmlinux":    "",
+              "modules":    "",
+              "ramdisk":    "",
+              "firmware":   "",
+              "dtb":        "",
+              "flash_image": $url
+            },
+            "data": {
+              "kernel_revision": {
+                "tree":    "qcom-next",
+                "url":     "",
+                "branch":  "main",
+                "commit":  "",
+                "describe": "",
+                "version": {
+                  "version": 0,
+                  "patchlevel": 0,
+                  "sublevel": null,
+                  "extra": "",
+                  "name": null
+                },
+                "patchset":       null,
+                "commit_tags":    [],
+                "commit_message": "",
+                "tip_of_branch":  true
+              },
+              "arch":        "arm64",
+              "defconfig":   "defconfig",
+              "compiler":    "gcc-12",
+              "error_code":  null,
+              "error_msg":   null,
+              "fragments":   [],
+              "config_full": "defconfig",
+              "platform":    $lavaname,
+              "runtime":     "lava",
+              "job_id":      ("ci-" + $machine),
+              "job_context": "github-actions",
+              "kernel_type": "image",
+              "regression":  null
+            },
+            "debug":          {},
+            "jobfilter":      null,
+            "platform_filter": [],
+            "owner":          "production",
+            "submitter":      "service:pipeline"
+          }' > "$DATA_DIR/cloudData.json"
+
         echo "✅ cloudData.json written"
+        cat "$DATA_DIR/cloudData.json"
 
-        echo "📝 Writing metadata.json (DTB key: dtbs/qcom/${DTB_NAME}.dtb)"
+        echo "📝 Writing metadata.json (DTB: dtbs/qcom/${DTB_NAME}.dtb)"
 
-        cat > "$DATA_DIR/metadata.json" <<EOF
-{
-  "build": {
-    "arch": "arm64",
-    "compiler": "gcc-12",
-    "defconfig": "defconfig",
-    "fragments": [],
-    "config_full": "defconfig",
-    "result": "pass"
-  },
-  "artifacts": {
-    "dtbs/qcom/${DTB_NAME}.dtb": ""
-  }
-}
-EOF
+        jq -n \
+          --arg dtb "dtbs/qcom/${DTB_NAME}.dtb" \
+          '{
+            "build": {
+              "arch":        "arm64",
+              "compiler":    "gcc-12",
+              "defconfig":   "defconfig",
+              "fragments":   [],
+              "config_full": "defconfig",
+              "result":      "pass"
+            },
+            "artifacts": {
+              ($dtb): ""
+            }
+          }' > "$DATA_DIR/metadata.json"
+
         echo "✅ metadata.json written"
+        cat "$DATA_DIR/metadata.json"
 
     - name: Render LAVA job definition
       shell: bash

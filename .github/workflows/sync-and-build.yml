@@ -180,11 +180,11 @@ jobs:
           mkdir -p "$WORKSPACE/artifacts"
           : > "$WORKSPACE/artifacts/file_list.txt"
 
-          # ---------------------------------------------------------------
+          # -------------------------------------------------------------------
           # Detect compression — S3 .tar files are sometimes gzip-compressed
-          # despite the .tar extension. tar -rf only works on plain tars.
-          # Decompress first if needed, then append only modified rootfs.img.
-          # ---------------------------------------------------------------
+          # despite the .tar extension. tar -rf only works on plain uncompressed
+          # tars — decompress first if needed, then append only rootfs.img.
+          # -------------------------------------------------------------------
           FILETYPE="$(file -b "$ORIGINAL_TAR")"
           echo "📋 Archive type: $FILETYPE"
 
@@ -243,9 +243,9 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          rm -rf "$WORKSPACE/artifacts"  || true
-          rm -rf "$WORKSPACE/build"      || true
-          rm -rf "$WORKSPACE/downloads"  || true
+          rm -rf "$WORKSPACE/artifacts"    || true
+          rm -rf "$WORKSPACE/build"        || true
+          rm -rf "$WORKSPACE/downloads"    || true
           rm -f  "$WORKSPACE/"*_qcomflash_payload.tar || true
 
       - name: Update summary
