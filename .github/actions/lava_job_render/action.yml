@@ -48,7 +48,7 @@ runs:
           exit 1
         fi
 
-        echo "✅ Resolved presigned URL for: $tarball_key"
+        echo "✅ Resolved presigned URL for: $tarball_keys"
         echo "artifact_url=$url" >> "$GITHUB_OUTPUT"
 
     - name: Write synthetic cloudData.json and metadata.json
