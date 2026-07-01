@@ -2,7 +2,7 @@ name: UAPI and Driver Checks
 
 on:
   pull_request:
-    # Optional: limit to main branch
+    # Optional: limit to main branchs
     branches: video.qclinux.0.0
 
 jobs:
