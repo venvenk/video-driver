@@ -154,7 +154,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          symlink_path="$WORKSPACE/opt/build/tmp/deploy/images/$MACHINE/qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
+          # ✅ Correct path — no /opt prefix
+          symlink_path="$WORKSPACE/build/tmp/deploy/images/$MACHINE/qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
 
           if [ ! -L "$symlink_path" ]; then
             echo "❌ Symlink not found: $symlink_path"
