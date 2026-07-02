@@ -180,7 +180,7 @@ jobs:
           # Split into TWO artifacts:
           # 1. {machine}_flash_files.tar — everything EXCEPT rootfs.img (~600 MB)
           # 2. {machine}_rootfs.img      — injected rootfs (~6.4 GB)
-          # LAVA downloads them sequentially so disk is never exhausted.
+          # LAVA downloads them sequentially then combines inside Docker.
           # ---------------------------------------------------------------
 
           FLASH_TAR="$WORKSPACE/${MACHINE}_flash_files.tar"
