@@ -2,7 +2,7 @@ name: LAVA Job Render
 description: >
   Resolves flash_files + rootfs presigned URLs, writes cloudData.json +
   metadata.json, renders a LAVA job definition with BOOT_METHOD=flasher
-  and --video_pre-merge tests.
+  and --video_pre-merge tests, then patches device_type to correct lavaname.
 
 inputs:
   docker_image:
@@ -12,7 +12,7 @@ inputs:
     description: Target machine name (e.g. qcs9100-ride-sx)
     required: true
   lavaname:
-    description: LAVA device-type name
+    description: LAVA device-type name (e.g. qcs9100-ride)
     required: true
   presigned_urls_file:
     description: Absolute path to presigned_urls.json from the build job
@@ -98,6 +98,7 @@ runs:
 
         echo "📝 Writing cloudData.json (machine=$MACHINE lavaname=$LAVA_NAME dtb=$DTB_NAME)"
 
+        # Use jq to safely construct JSON — avoids heredoc YAML parse issues
         jq -n \
           --arg machine   "$MACHINE" \
           --arg lavaname  "$LAVA_NAME" \
@@ -113,31 +114,31 @@ runs:
             "state":  "done",
             "result": "pass",
             "artifacts": {
-              "metadata":      "",
-              "kernel":        "",
-              "vmlinux":       "",
-              "modules":       "",
-              "ramdisk":       "",
-              "firmware":      "",
-              "dtb":           "",
-              "flash_image":   $flash_url,
-              "rootfs_image":  $rootfs_url
+              "metadata":    "",
+              "kernel":      "",
+              "vmlinux":     "",
+              "modules":     "",
+              "ramdisk":     "",
+              "firmware":    "",
+              "dtb":         "",
+              "flash_image": $flash_url,
+              "rootfs_image": $rootfs_url
             },
             "data": {
               "kernel_revision": {
-                "tree":    "qcom-next",
-                "url":     "",
-                "branch":  "main",
-                "commit":  "",
+                "tree": "qcom-next",
+                "url": "",
+                "branch": "main",
+                "commit": "",
                 "describe": "",
                 "version": {
                   "version": 0, "patchlevel": 0, "sublevel": null,
                   "extra": "", "name": null
                 },
-                "patchset":       null,
-                "commit_tags":    [],
+                "patchset": null,
+                "commit_tags": [],
                 "commit_message": "",
-                "tip_of_branch":  true
+                "tip_of_branch": true
               },
               "arch":        "arm64",
               "defconfig":   "defconfig",
@@ -161,7 +162,6 @@ runs:
           }' > "$DATA_DIR/cloudData.json"
 
         echo "✅ cloudData.json written"
-        cat "$DATA_DIR/cloudData.json"
 
         echo "📝 Writing metadata.json (DTB key: dtbs/qcom/${DTB_NAME}.dtb)"
         jq -n \
@@ -181,7 +181,6 @@ runs:
           }' > "$DATA_DIR/metadata.json"
 
         echo "✅ metadata.json written"
-        cat "$DATA_DIR/metadata.json"
 
     - name: Render LAVA job definition
       shell: bash
@@ -199,8 +198,6 @@ runs:
         mkdir -p "$RENDERS_DIR"
 
         echo "🔧 Rendering LAVA job: machine=$MACHINE lavaname=$LAVA_NAME dtb=$TARGET_DTB"
-        echo "=== flasher.jinja2 timeout ==="
-        grep -A2 "timeout:" "$JOB_RENDER_DIR/templates/boot/flasher.jinja2" || true
 
         docker run -i --rm \
           --workdir="$JOB_RENDER_DIR" \
@@ -221,5 +218,39 @@ runs:
           '
 
         echo "✅ LAVA job definition rendered"
-        echo "=== Rendered YAML ==="
-        cat "$RENDERS_DIR/lava_job_definition.yaml"
+
+    - name: Patch device_type and job timeout in rendered YAML
+      shell: bash
+      env:
+        MACHINE:   ${{ inputs.machine }}
+        LAVA_NAME: ${{ inputs.lavaname }}
+        WORKSPACE: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+
+        JOB_RENDER_DIR="$(dirname "$WORKSPACE")/job_render"
+        YAML="$JOB_RENDER_DIR/renders/lava_job_definition.yaml"
+
+        if [ ! -f "$YAML" ]; then
+          echo "❌ Rendered YAML not found: $YAML"
+          exit 1
+        fi
+
+        echo "🔧 Patching device_type from '$MACHINE' to '$LAVA_NAME'"
+
+        # Fix ownership so runner can modify the file written by Docker
+        sudo chown "$(id -u):$(id -g)" "$YAML" || true
+
+        # Patch device_type — replace any machine name with correct lavaname
+        sed -i "s|^device_type:.*|device_type: ${LAVA_NAME}|g" "$YAML"
+
+        # Patch job timeout to 240 min to be larger than 120 min download action
+        sed -i '/^timeouts:/,/^[^ ]/{s/^\([[:space:]]*\)minutes:[[:space:]]*[0-9]*/\1minutes: 240/}' "$YAML" || true
+
+        echo "✅ Patched YAML"
+        echo "=== device_type ==="
+        grep "^device_type:" "$YAML"
+        echo "=== timeouts ==="
+        grep -A5 "^timeouts:" "$YAML" || true
+        echo "=== Full Rendered YAML ==="
+        cat "$YAML"
