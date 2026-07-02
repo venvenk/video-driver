@@ -50,25 +50,25 @@ jobs:
       - name: Download meta artifact from S3
         shell: bash
         env:
-          WORKSPACE:   ${{ github.workspace }}
-          MACHINE:     ${{ matrix.build_matrix.machine }}
-          META_S3_KEY: ${{ matrix.build_matrix.meta_s3_key }}
+          WORKSPACE:      ${{ github.workspace }}
+          MACHINE:        ${{ matrix.build_matrix.machine }}
+          META_S3_KEY:    ${{ matrix.build_matrix.meta_s3_key }}
+          META_S3_PATH:   ${{ matrix.build_matrix.meta_s3_path }}
         run: |
           set -euo pipefail
           mkdir -p "$WORKSPACE/downloads/meta"
-          echo "📥 Downloading s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/artifacts/meta/${META_S3_KEY}"
-          aws s3 cp \
-            "s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/artifacts/meta/${META_S3_KEY}" \
-            "$WORKSPACE/downloads/meta/"
+          S3_URI="s3://qli-prd-video-gh-artifacts/qualcomm-linux/video-driver/artifacts/${META_S3_PATH}/${META_S3_KEY}"
+          echo "📥 Downloading $S3_URI"
+          aws s3 cp "$S3_URI" "$WORKSPACE/downloads/meta/"
           echo "✅ Download complete"
           ls -lh "$WORKSPACE/downloads/meta/"
 
       - name: Extract meta artifact and create qcomflash symlink
         shell: bash
         env:
-          WORKSPACE:   ${{ github.workspace }}
-          MACHINE:     ${{ matrix.build_matrix.machine }}
-          META_S3_KEY: ${{ matrix.build_matrix.meta_s3_key }}
+          WORKSPACE:    ${{ github.workspace }}
+          MACHINE:      ${{ matrix.build_matrix.machine }}
+          META_S3_KEY:  ${{ matrix.build_matrix.meta_s3_key }}
         run: |
           set -euo pipefail
 
@@ -82,6 +82,7 @@ jobs:
           echo "=== Extracted contents (depth 3) ==="
           find "$DEPLOY_DIR" -maxdepth 3 -print | sort
 
+          # Search up to depth 2 for *.qcomflash directory (handles timestamped names)
           QCOMFLASH_DIR="$(
             find "$DEPLOY_DIR" -maxdepth 2 -type d -name "*.qcomflash" \
               | head -n 1 || true
@@ -153,7 +154,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          symlink_path="$WORKSPACE/build/tmp/deploy/images/$MACHINE/qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
+          symlink_path="$WORKSPACE/opt/build/tmp/deploy/images/$MACHINE/qcom-multimedia-proprietary-image-${MACHINE}.rootfs.qcomflash"
 
           if [ ! -L "$symlink_path" ]; then
             echo "❌ Symlink not found: $symlink_path"
@@ -180,7 +181,7 @@ jobs:
           # Split into TWO artifacts:
           # 1. {machine}_flash_files.tar — everything EXCEPT rootfs.img (~600 MB)
           # 2. {machine}_rootfs.img      — injected rootfs (~6.4 GB)
-          # LAVA downloads them sequentially then combines inside Docker.
+          # LAVA downloads sequentially then combines inside Docker postprocess.
           # ---------------------------------------------------------------
 
           FLASH_TAR="$WORKSPACE/${MACHINE}_flash_files.tar"
@@ -226,11 +227,11 @@ jobs:
           WORKSPACE: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          rm -rf "$WORKSPACE/artifacts"    || true
-          rm -rf "$WORKSPACE/build"        || true
-          rm -rf "$WORKSPACE/downloads"    || true
+          rm -rf "$WORKSPACE/artifacts"         || true
+          rm -rf "$WORKSPACE/build"             || true
+          rm -rf "$WORKSPACE/downloads"         || true
           rm -f  "$WORKSPACE/"*_flash_files.tar || true
-          rm -f  "$WORKSPACE/"*_rootfs.img || true
+          rm -f  "$WORKSPACE/"*_rootfs.img      || true
 
       - name: Update summary
         if: success() || failure()
