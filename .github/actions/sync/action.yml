@@ -19,22 +19,15 @@ runs:
   using: "composite"
   steps:
     - name: Checkout PR code
-      if: ${{ inputs.event_name == 'pull_request_target' && inputs.pr_ref != '' && inputs.pr_repo != '' }}
+      if: ${{ inputs.event_name == 'pull_request' && inputs.pr_ref != '' && inputs.pr_repo != '' }}
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
         ref: ${{ inputs.pr_ref }}
         repository: ${{ inputs.pr_repo }}
 
-    - name: Checkout branch/ref for push/workflow_call
-      if: ${{ (inputs.event_name == 'push' || inputs.event_name == 'workflow_call') && inputs.base_ref != '' }}
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        ref: ${{ inputs.base_ref }}
-
-    - name: Checkout workflow_dispatch ref
-      if: ${{ inputs.event_name == 'workflow_dispatch' && inputs.base_ref != '' }}
+    - name: Checkout branch/ref for push, workflow_call, workflow_dispatch
+      if: ${{ (inputs.event_name == 'push' || inputs.event_name == 'workflow_call' || inputs.event_name == 'workflow_dispatch') && inputs.base_ref != '' }}
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
